@@ -1,70 +1,122 @@
+unsigned char data;
+#define COM_HELLO 1
+void initLEDs(){
+  DDRD |= (1 << DDD5) | (1 << DDD6) | (1 << DDD7); // make LED1, LED2 OUTPUT
+  DDRB |= (1 << DDB0) | (1 << DDB1) | (1 << DDB2) | (1 << DDB3) | (1 << DDB4);
+}
+void LED1(int a){
+  PORTD = (PORTD & ~(1<<PORTD6)) | (a<<PORTD6);
+}
+void LED2(int a){
+  PORTD = (PORTD & ~(1<<PORTD7)) | (a<<PORTD7);
+}
+void LED3(int a){
+  PORTB = (PORTB & ~(1<<PORTB0)) | (a<<PORTB0);
+}
+void LED4(int a){
+  PORTD = (PORTD & ~(1<<PORTD5)) | (a<<PORTD5);
+}
+void LED5(int a){
+  PORTB = (PORTB & ~(1<<PORTB1)) | (a<<PORTB1);
+}
+void LED6(int a){
+  PORTB = (PORTB & ~(1<<PORTB2)) | (a<<PORTB2);
+}
+void LED7(int a){
+  PORTB = (PORTB & ~(1<<PORTB3)) | (a<<PORTB3);
+}
+void LED8(int a){
+  PORTB = (PORTB & ~(1<<PORTB4)) | (a<<PORTB4);
+}
+void debugValue(char v){
+  LED1(v & 1);
+  LED2((v & (1<<1)) >> 1);
+  LED3((v & (1<<2)) >> 2);
+  LED4((v & (1<<3)) >> 3);
+  LED5((v & (1<<4)) >> 4);
+  LED6((v & (1<<5)) >> 5);
+  LED7((v & (1<<6)) >> 6);
+  LED8((v & (1<<7)) >> 7);
+}
 
-int LED1 = 13;
-int LED2 = 9;
-int BUZ = 12;
-int AIN = A0;
-int duration = 200;
-int startAt = 0;
-int cnt=0;
-int timeStamp = 0;
-int _val=0;
-int freq;
-int t, _t;
-int TICKTOCK;
-int queue[] = {2,1,0,1,2,2,2,0,0,2,2,2,0,3,3,3};
-int queue_size = 16;
-int freqs[] = {261, 294, 329, 349, 392, 440, 494, 523, 587, 659, 783};
-unsigned long distance;
-int TRIG = 12;
-int ECHO = 8;
+void initUART(){
+//  // USART INIT (Manual 179Page)
+  UBRR0H = (unsigned char) (103>>8);
+  UBRR0L = (unsigned char) (103);
+    
+  // Fosc = 16.0Mhz, BaudRate = 38.4kbps, UBRRn => 25(U2Xn=0) / 51(U2Xn=1)
+  // U2Xn=0 -> Normal mode, U2Xn=1-> Double Speed mode!
+  // Enabling Interrupts
+
+  // UCSR0A : (page 201)
+  // for HC-05, Data bit: 8bit, Stop bit: 1bit, no parity bit!
+  UCSR0B = (1 << RXCIE0) | (1<<TXCIE0) | (1<<RXEN0) | (1<<TXEN0);
+  UCSR0C = (1<<UCSZ01) | (1<<UCSZ00);
+
+  // Transmit and Recievie Examples on 186page
+}
+char rBuf[30];
+char wBuf[50];
+char rcnt, wcnt;
+int cnt;
+int verifyCommand();
+int verifyCommand(){
+  if(rBuf[0]=='H' && rBuf[1]=='I'){
+    return COM_HELLO;
+  }
+  return NULL;
+}
+void respond(char *);
+void respond(char *buf){
+  for(int i=0;;i++){
+    if(buf[i] == 0) break;
+    while(!(UCSR0A & (1<<UDRE0)));
+    UDR0 = buf[i];    
+  }  
+  while(!(UCSR0A & (1<<UDRE0)));
+  UDR0 = '\r';    
+  while(!(UCSR0A & (1<<UDRE0)));
+  UDR0 = '\n';    
+}
+void do_command(){
+  if(rcnt>= 2 && rBuf[rcnt-2] == '\r' && rBuf[rcnt-1] == '\n'){ // if \n\r is recieved!
+    rcnt-=2;
+    rBuf[rcnt] = 0;
+    sprintf(wBuf, "[rcnt:%d,buf:%s]", rcnt, rBuf);
+    rcnt = 0;
+    respond(wBuf);
+    switch(verifyCommand()){
+      case COM_HELLO:
+        respond("Hello!");
+        break;
+      case NULL:
+        respond("Undeclared Command!");
+        break;
+    }
+  }
+}
 void setup() {
-//  pinMode(LED1, OUTPUT);
-//  pinMode(LED2, OUTPUT);
-//  pinMode(BUZ, OUTPUT);
-
-  pinMode(TRIG, OUTPUT);
-  pinMode(ECHO, INPUT_PULLUP);
-  startAt = millis();
-  t = 0;
-  freq = freqs[0];
-  timeStamp = micros();
-  _t = -1;
-  TICKTOCK = 0;
-  Serial.begin(9600);
+  initLEDs();
+  initUART();
+}
+ISR(USART_RX_vect){
+}
+ISR(USART_TX_vect){
 }
 void loop() {
-  unsigned long width;
-  digitalWrite(ECHO, HIGH);  
+  //Recieve
+  // Transmit
+//  de bbugValue(UCSR0A); // 현재 상황: FE0 (Frame Error)
+  //debugValue(UCSR0A); // 현재 상황: FE0 (Frame Error)
+  while(!(UCSR0A & (1<<RXC0)));
+  rBuf[rcnt++] = UDR0;
+  debugValue(rcnt);
 
-
-  // put your main code here, to run repeatedly:
-  duration = 1000;
-  t = (millis() - startAt)/duration;
-  if(t != _t && t%6 == 1){ // 시간이 바뀔때
-//    freq = freqs[queue[t]];
-    width = pulseIn(ECHO, HIGH);
-    Serial.print("Distance = ");
-    Serial.print(width/58);
-    Serial.println("cm");
-    Serial.println(cnt);
-  }
-//  if(t > queue_size){
-//    startAt = millis();
-//  }
-//int DELAY = 1000000/(freq*2);
-  int DELAY = 10;  
-  if(t%6 != 1){
-    digitalWrite(TRIG, LOW);
-    return;
-  }
-  if((micros() - timeStamp) > DELAY){
-    timeStamp = micros();
-    TICKTOCK = !TICKTOCK;
-    cnt++;
-  }
-  else {
-    if(TICKTOCK) digitalWrite(TRIG, HIGH);
-    else digitalWrite(TRIG, LOW);
-  }
-  _t = t;
+  do_command();
+  // cnt++;
+  // debugValue(cnt);
+  
+  // while(!(UCSR0A & (1<<UDRE0)));
+  // debugValue(data); //01101000
+  // UDR0 = data;
 }
