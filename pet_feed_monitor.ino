@@ -50,7 +50,7 @@ void initUART(){
 
   // UCSR0A : (page 201)
   // for HC-05, Data bit: 8bit, Stop bit: 1bit, no parity bit!
-  UCSR0B = (1 << RXCIE0) | (1<<TXCIE0) | (1<<RXEN0) | (1<<TXEN0);
+  UCSR0B = (1<<RXCIE0) | (1<<TXCIE0) | (1<<RXEN0) | (1<<TXEN0);
   UCSR0C = (1<<UCSZ01) | (1<<UCSZ00);
 
   // Transmit and Recievie Examples on 186page
@@ -104,19 +104,10 @@ ISR(USART_RX_vect){
 ISR(USART_TX_vect){
 }
 void loop() {
-  //Recieve
-  // Transmit
-//  de bbugValue(UCSR0A); // 현재 상황: FE0 (Frame Error)
-  //debugValue(UCSR0A); // 현재 상황: FE0 (Frame Error)
-  while(!(UCSR0A & (1<<RXC0)));
+
+  while(!(UCSR0A & (1<<RXC0))); // wait until RX will be available!
   rBuf[rcnt++] = UDR0;
   debugValue(rcnt);
 
   do_command();
-  // cnt++;
-  // debugValue(cnt);
-  
-  // while(!(UCSR0A & (1<<UDRE0)));
-  // debugValue(data); //01101000
-  // UDR0 = data;
 }
