@@ -6,7 +6,7 @@
 #define ADDR_DS1307 0b1101000
 #define ADDR_24LC02B 0b1010000
 
-#define DEBUG 1
+#define DEBUG 0
 #define BLUETOOTH_LISTEN 1
 uint8_t data;
 
@@ -14,7 +14,8 @@ char rBuf[30];
 char wBuf[50];
 char rcnt, wcnt;
 int cnt;
-
+uint8_t flag = 0;
+// following interrupt vector names referenced from http://ee-classes.usc.edu/ee459/library/documents/avr_intr_vectors/
 void initLEDs(){
   DDRD |= (1 << DDD5) | (1 << DDD6) | (1 << DDD7); // make LED1, LED2 OUTPUT
   DDRB |= (1 << DDB0) | (1 << DDB1) | (1 << DDB2) | (1 << DDB3) | (1 << DDB4);
@@ -226,36 +227,76 @@ void getCurrentClock(){
   sprintf(wBuf, "hour is %d", h);
   respond(wBuf);
 }
+void initDelay(){
+  // External Interrupt Guide on p.79
+  // AVR Status Register p.20
+  SREG |= 1 << 7;
+  // External Interrupt Mask Register
+  EIMSK = 1 << INT0; // External Interrupt 0 is enabled.
+  // External Interrupt Control Register A
+  EICRA = (1 << ISC01) | (1 << ISC00); // rising edge of INT0 generate an interrupt request. 
+
+  /*
+  // +) ISR 없이 인터럽트 체크하기
+    while(1){
+      if(EIFR & (1 << INTF0)){
+        flag != flag;
+        EIFR &= ~(1 << INTF0);
+        LED2(flag);
+      }
+    }
+  */
+}
 int main(){
   initLEDs();
-  initUART();
-  initTWI();
-  debugValue(0xFF);
-  
-  respond("EEPROM TEST START!");
-  setSlaveAddr(ADDR_24LC02B);
-  writeTWI(0x00, 0x23);
-  respond("Writing to 0x00 Complete");
-  writeTWI(0x01, 0x34);
-  respond("Writing to 0x01 Complete");
-  uint8_t d;
-  d = readTWI(0x00);
-  sprintf(wBuf, "EEPROM 0x00 : %x", d);
-  respond(wBuf);
-  d = readTWI(0x01);
-  sprintf(wBuf, "EEPROM 0x01 : %x", d);
-  respond(wBuf);
-
-  respond("EEPROM TEST DONE!");
-  
-  respond("hihi!");
+  initDelay();
   while(1){
-    if(BLUETOOTH_LISTEN){
-    // wait until RX will be prepared!
-      while(!(UCSR0A & (1<<RXC0)));	
-      rBuf[rcnt++] = UDR0;
-      do_command();
+/*    if(EIFR & (1 << INTF0)){
+      flag != flag;
+      EIFR &= ~(1 << INTF0);
+      LED2(flag);
+    }*/
+  }
+//  Serial.begin(9600);
+  //initUART();
+  //LED2(1);
+  if(BLUETOOTH_LISTEN) initTWI();
+
+  // 스위치의 위치 : PD2 (INT0) -- Uno 2번
+  // LED의 위치 : PD7 (LED2) -- Uno 7번
+
+  if(DEBUG){
+    debugValue(0xFF);
+    
+    respond("EEPROM TEST START!");
+    setSlaveAddr(ADDR_24LC02B);
+    writeTWI(0x00, 0x23);
+    respond("Writing to 0x00 Complete");
+    writeTWI(0x01, 0x34);
+    respond("Writing to 0x01 Complete");
+    uint8_t d;
+    d = readTWI(0x00);
+    sprintf(wBuf, "EEPROM 0x00 : %x", d);
+    respond(wBuf);
+    d = readTWI(0x01);
+    sprintf(wBuf, "EEPROM 0x01 : %x", d);
+    respond(wBuf);
+
+    respond("EEPROM TEST DONE!");
+    
+    respond("hihi!");
+    while(1){
+      if(BLUETOOTH_LISTEN){
+      // wait until RX will be prepared!
+        while(!(UCSR0A & (1<<RXC0)));	
+        rBuf[rcnt++] = UDR0;
+        do_command();
+      }
     }
   }
-  
+}
+ISR(INT0_vect){
+  if(flag == 0) flag = 1;
+  else flag = 0;
+  LED2(flag);
 }
