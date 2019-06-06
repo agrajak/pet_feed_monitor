@@ -180,6 +180,7 @@ void do_command(){
     respond(wBuf);
     switch(verifyCommand()){
       case COM_HELLO:
+        respond("nice to meet you!");
         break;
       case COM_CURRENT_CLOCK:
         getCurrentClock();
@@ -229,12 +230,14 @@ int main(){
   initLEDs();
   initUART();
   initTWI();
+  debugValue(0xFF);
+  
   respond("EEPROM TEST START!");
   setSlaveAddr(ADDR_24LC02B);
   writeTWI(0x00, 0x23);
   respond("Writing to 0x00 Complete");
   writeTWI(0x01, 0x34);
-  respond("Writing to 0x00 Complete");
+  respond("Writing to 0x01 Complete");
   uint8_t d;
   d = readTWI(0x00);
   sprintf(wBuf, "EEPROM 0x00 : %x", d);
@@ -244,7 +247,8 @@ int main(){
   respond(wBuf);
 
   respond("EEPROM TEST DONE!");
-  //
+  
+  respond("hihi!");
   while(1){
     if(BLUETOOTH_LISTEN){
     // wait until RX will be prepared!
@@ -253,4 +257,5 @@ int main(){
       do_command();
     }
   }
+  
 }
