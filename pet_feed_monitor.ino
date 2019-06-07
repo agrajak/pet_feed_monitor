@@ -6,7 +6,7 @@
 #define ADDR_DS1307 0b1101000
 #define ADDR_24LC02B 0b1010000
 #define CPU_SPEED 16000000 // for test arduino, Fcpu is 1200000(12Mhz)
-#define DEBUG 0
+#define DEBUG 1
 #define BLUETOOTH_LISTEN 1
 uint8_t data;
 
@@ -17,31 +17,21 @@ int cnt;
 uint8_t flag = 0;
 // following interrupt vector names referenced from http://ee-classes.usc.edu/ee459/library/documents/avr_intr_vectors/
 void initLEDs(){
-  DDRD |= (1 << DDD5) | (1 << DDD6) | (1 << DDD7); // make LED1, LED2 OUTPUT
-  DDRB |= (1 << DDB0) | (1 << DDB1) | (1 << DDB2) | (1 << DDB3) | (1 << DDB4);
+  DDRD |= (1 << DDD4); // LED3
+  DDRB |= (1 << DDB1) | (1 << DDB2); // LED1 and LED2
 }
 uint8_t readBit(int addr, uint8_t loc){
   return (addr & (1<<loc)) >> loc;
 }
-void LED1(int a){ PORTD = (PORTD & ~(1<<PORTD6)) | (a<<PORTD6); }
-void LED2(int a){ PORTD = (PORTD & ~(1<<PORTD7)) | (a<<PORTD7); }
-void LED3(int a){ PORTB = (PORTB & ~(1<<PORTB0)) | (a<<PORTB0); } 
-void LED4(int a){ PORTD = (PORTD & ~(1<<PORTD5)) | (a<<PORTD5); }
-void LED5(int a){ PORTB = (PORTB & ~(1<<PORTB1)) | (a<<PORTB1); }
-void LED6(int a){ PORTB = (PORTB & ~(1<<PORTB2)) | (a<<PORTB2); }
-void LED7(int a){ PORTB = (PORTB & ~(1<<PORTB3)) | (a<<PORTB3); }
-void LED8(int a){ PORTB = (PORTB & ~(1<<PORTB4)) | (a<<PORTB4); }
+void LED1(int a){ PORTB = (PORTB & ~(1<<PORTB1)) | (a<<PORTB1); }
+void LED2(int a){ PORTB = (PORTB & ~(1<<PORTB2)) | (a<<PORTB2); }
+void LED3(int a){ PORTD = (PORTD & ~(1<<PORTD4)) | (a<<PORTD4); } 
 
 void debugValue(uint8_t v){
-  if(DEBUG){
-  LED1(v & 1);
-  LED2((v & (1<<1)) >> 1);
-  LED3((v & (1<<2)) >> 2);
-  LED4((v & (1<<3)) >> 3);
-  LED5((v & (1<<4)) >> 4);
-  LED6((v & (1<<5)) >> 5);
-  LED7((v & (1<<6)) >> 6);
-  LED8((v & (1<<7)) >> 7);
+    if(DEBUG){
+    LED1(v & 1);
+    LED2((v & (1<<1)) >> 1);
+    LED3((v & (1<<2)) >> 2);
   }
 }
 
@@ -235,9 +225,9 @@ void initDelay(){
   // AVR Status Register p.20
   SREG |= 1 << 7;
   // External Interrupt Mask Register
-  EIMSK = 1 << INT0; // External Interrupt 0 is enabled.
+  EIMSK = (1 << INT0) | (1 << INT1); // External Interrupt 0 is enabled.
   // External Interrupt Control Register A
-  EICRA = (1 << ISC01) | (1 << ISC00); // rising edge of INT0 generate an interrupt request. 
+  EICRA = (1 << ISC01) | (1 << ISC00) | (1 << ISC11) | (1 << ISC10); // rising edge of INT0 generate an interrupt request. 
 
   /*
   // +) ISR 없이 인터럽트 체크하기
@@ -254,6 +244,7 @@ void initDelay(){
 
   // Timer/Counter2 Control Register A - controls the Output Compare pin (OC2A) behavior.
 
+/*
   TCCR2A = 0; // OC0A, OC0B disabled, Wave Form Generator : Normal Mode!
   // Update of OCRx at Immediate, TOV flag set on MAX. (p.164)
 
@@ -268,20 +259,19 @@ void initDelay(){
   // Timer/Counter2 Interrupt Flag Register (p.167)
   // TIFR2
   // Asynchoronous Status Register (p.167)
-  ASSR = (1 << EXCLK | 0 << AS2);
+  ASSR = (0 << EXCLK | 1 << AS2);
+  */
 }
 int main(){
   initLEDs();
+  if(BLUETOOTH_LISTEN) initUART();
   initDelay();
-  while(1){
-  }
-  if(BLUETOOTH_LISTEN) initTWI();
 
-  // 스위치의 위치 : PD2 (INT0) -- Uno 2번
-  // LED의 위치 : PD7 (LED2) -- Uno 7번
+  LED1(1);
+  LED3(1);
 
+  initTWI();
   if(DEBUG){
-    debugValue(0xFF);
     
     respond("EEPROM TEST START!");
     setSlaveAddr(ADDR_24LC02B);
@@ -293,13 +283,15 @@ int main(){
     d = readTWI(0x00);
     sprintf(wBuf, "EEPROM 0x00 : %x", d);
     respond(wBuf);
+    LED2(1);
     d = readTWI(0x01);
     sprintf(wBuf, "EEPROM 0x01 : %x", d);
     respond(wBuf);
+    LED2(0);
 
     respond("EEPROM TEST DONE!");
     
-    respond("hihi!");
+    respond("hihi2!");
     while(1){
       if(BLUETOOTH_LISTEN){
       // wait until RX will be prepared!
@@ -312,26 +304,40 @@ int main(){
 }
 uint8_t flag2 = 0;
 ISR(INT0_vect){
-  
+  respond("hi");
   if(flag2 == 0) flag2 = 1;
   else flag2 = 0;
+  LED2(flag2);
   if(flag2 == 1){
-    TCCR2B = 0b111 << CS20; // ClkT2S / 1024
+//    TCCR2B = 0b111 << CS20; // ClkT2S / 1024
   }
   else {
-    TCCR2B = 0;
+//    TCCR2B = 0;
   }
-  
 }
 int cnt2 = 0;
+/*
 ISR(TIMER2_OVF_vect){
   cnt2++;
-  if(cnt2 % 12 == 0){
+  int delay = 1000; //(ms)
+  
+  // cnt2는 1024 / CPU_SPEED 초마다 1씩 증가한다. (prescale=1024)
+  // 내가 알고 싶은거는 max의 값!
+  // delay/1000 초가 지났을 때 cnt2의 값은? -> 이 값이 max의 값이 된다.
+  // 1024/CPU_SPEED : 1 = delay/1000 : cnt2
+  // delay / 1000 = cnt2 * 1024 / CPU_SPEED
+  // CPU_SPEED / 1024 * delay / 1000 = cnt2
+  // cnt2 = CPU_SPEED * delay
+  
+  int threshold = CPU_SPEED * delay / 1024000;
+    
+  if(cnt2 % threshold == 0){
     if(flag == 0) flag = 1;
     else flag = 0;
-    LED2(flag);
+//    LED2(flag);
   }
-  // 
-  /*
-  */
+  //
 }
+
+
+*/
