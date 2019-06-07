@@ -3,21 +3,26 @@
 #define COM_INIT_CLOCK 2
 #define COM_SET_CLOCK 3
 #define COM_CURRENT_CLOCK 4
+
 #define ADDR_DS1307 0b1101000
 #define ADDR_24LC02B 0b1010000
+
+#define TC2_SCALE 0b111 // checkout 
+
 #define CPU_SPEED 16000000 // for test arduino, Fcpu is 1200000(12Mhz)
 #define DEBUG 1
-#define BLUETOOTH_LISTEN 1
+#define BLUETOOTH_LISTEN 0
+
 volatile uint8_t data;
 
 volatile char rBuf[30];
 volatile char wBuf[50];
 volatile char rcnt, wcnt;
-volatile int cnt, cnt2 = 0;
+volatile int cnt;
+volatile int cnt2=0;
 volatile uint8_t flag = 0, flag2 = 0;
 volatile uint8_t SLAVE_ADDR;
-
-
+volatile uint8_t isTimerDone = 0;
 //////////////////////////////// -- INIT REGISTERS --- ///////////////////////////////////
 
 // following interrupt vector names referenced from http://ee-classes.usc.edu/ee459/library/documents/avr_intr_vectors/
@@ -53,7 +58,6 @@ void initDelay(){
       }
     }
   */
-
   // 8bit Timer/Counter2 with PWM and Asynchoronous Operation p.155
 
   // Timer/Counter2 Control Register A - controls the Output Compare pin (OC2A) behavior.
@@ -61,8 +65,11 @@ void initDelay(){
   TCCR2A = 0; // OC0A, OC0B disabled, Wave Form Generator : Normal Mode!
   // Update of OCRx at Immediate, TOV flag set on MAX. (p.164)
 
+  // Asynchoronous Status Register (p.167)
+  ASSR = (0<< AS2 | 0<<EXCLK);
+
   // Timer/Counter2 Control Register B - CS22:0, (Clock Select)  
-  TCCR2B = 0b111 << CS20; // ClkT2S / 1024
+  //  TCCR2B = 0b110 << CS20; // ClkT2S / 1024
 
   // we can stop time/counter2 clock by set TCCR2B = 0;
   
@@ -71,9 +78,7 @@ void initDelay(){
 
   // Timer/Counter2 Interrupt Flag Register (p.167)
 
-  // Asynchoronous Status Register (p.167)
-  ASSR = (1 << EXCLK) | ( 1<< AS2); // use 
-  SREG |= 1 << 7;
+  SREG |= 1 << 7; // sei();
 }
 void initUART(){
 //  // USART INIT (Manual 179Page)
@@ -95,7 +100,7 @@ void initUART(){
   UCSR0B = (1 << RXEN0) | (1 << TXEN0);
   // Enabling Interrupts
 
-  //UCSR0C = (1<<UCSZ01) | (1<<UCSZ00);
+  // UCSR0C = (1<<UCSZ01) | (1<<UCSZ00);
   // for HC-05, Data bit: 8bit, Stop bit: 1bit, no parity bit!
   // UCSR0C의 경우 기본 값이 Async USART, Parity Disabled, 1 stop-bit, 8 databit 이라서 설정해줄 필요가 없음!
 
@@ -112,6 +117,37 @@ void initTWI(){ // p.225
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+/////////////////////////////// -- PROTOTYPES -- ///////////////////////////
+
+void respond(char *);
+void respondByte(uint8_t);
+void debugValue(uint8_t v);
+void setSlaveAddr(uint8_t);
+void senSLARW(int);
+void startTWI();
+void stopTWI();
+void clearTWCR();
+
+uint8_t readTWI(uint8_t);
+uint8_t writeTWI(uint8_t, uint8_t);
+
+int verifyCommand();
+void respond(char *);
+void respondByte(uint8_t);
+
+void getCurrentClock();
+void setCurrentClock();
+void initClock();
+
+void do_command();
+
+void startTimer(uint8_t);
+void stopTimer();
+void delay_ms(int);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 uint8_t readBit(int addr, uint8_t loc){
   return (addr & (1<<loc)) >> loc;
@@ -195,7 +231,6 @@ uint8_t writeTWI(uint8_t addr, uint8_t data){
 
   stopTWI();   // ====> STOP
 }
-int verifyCommand();
 int verifyCommand(){
   if(rBuf[0]=='H' && rBuf[1]=='I'){
     return COM_HELLO;
@@ -211,7 +246,6 @@ int verifyCommand(){
   }
   return NULL;
 }
-void respond(char *);
 void respond(char *buf){
   for(int i=0;;i++){
     if(buf[i] == 0) break;
@@ -227,9 +261,6 @@ void respondByte(uint8_t value){
   sprintf(wBuf, "[%x]", value);
   respond(wBuf);
 }
-void getCurrentClock();
-void setCurrentClock();
-void initClock();
 void do_command(){
   if(rcnt>= 2 && rBuf[rcnt-2] == '\r' && rBuf[rcnt-1] == '\n'){ // if \n\r is recieved!
     rcnt-=2;
@@ -239,16 +270,24 @@ void do_command(){
     respond(wBuf);
     switch(verifyCommand()){
       case COM_HELLO:
+        LED3(1);
         respond("nice to meet you!");
+        LED3(0);
         break;
       case COM_CURRENT_CLOCK:
+        LED3(1);
         getCurrentClock();
+        LED3(0);
         break;
       case COM_SET_CLOCK:
+        LED3(1);
         setCurrentClock();
+        LED3(0);
         break;
       case COM_INIT_CLOCK:
+        LED3(1);
         initClock();
+        LED3(0);
         break;
       default:
         respond("Undeclared Command!");
@@ -287,12 +326,10 @@ void getCurrentClock(){
 }
 int main(){
   initLEDs();
-  if(BLUETOOTH_LISTEN) initUART();
+  initUART();
   initTWI();
   initDelay();    
 
-  LED2(1);
-//  while(1);
   if(DEBUG){
     respond("EEPROM TEST START!");
     setSlaveAddr(ADDR_24LC02B);
@@ -310,7 +347,8 @@ int main(){
     respond(wBuf);
 
     respond("EEPROM TEST DONE!");
-    respond("hihi2!");
+  }
+  respond("hi!");
 /*
     while(1){
       if(EIFR & (1 << INTF0)){
@@ -322,46 +360,62 @@ int main(){
       }
     }
 */
-    LED1(1);
-    LED3(1);
-    while(1){
-      LED3(flag2);
-      LED1(flag2);
-      LED2(flag2);
-      if(BLUETOOTH_LISTEN){
-      // wait until RX will be prepared!
-        while(!(UCSR0A & (1<<RXC0)));	
-        rBuf[rcnt++] = UDR0;
-        do_command();
+  uint8_t flag3 = 0;
+  while(1){
+    if(BLUETOOTH_LISTEN){
+    // wait until RX will be prepared!
+      
+      while(!(UCSR0A & (1<<RXC0))){
+        
       }
+      rBuf[rcnt++] = UDR0;
+      do_command(); 
     }
+    delay_ms(1000);
+    flag3 = flag3 == 0 ? 1 : 0;
+    LED2(flag3);
   }
+}
+void startTimer(uint8_t scale){
+  TCCR2B = TC2_SCALE << CS20; //  p.165
+  isTimerDone = 0;
+  // 0b000 -> No clock source
+  // 0b001 -> (No Prescaling)
+  // 0b010 -> /8
+  // 0b011 -> /32
+  // 0b100 -> /64
+  // 0b101 -> /128
+  // 0b110 -> /256
+  // 0b111 -> /1024
+}
+void stopTimer(){
+  TCCR2B = 0; 
+}
+void delay_us(int time){
+  cnt2 = 64UL*time/1000UL;
+//  cnt2 = 48*(1000/1000);
+  startTimer(02b001);
+  while(!isTimerDone);
+  stopTimer();
+}
+void delay_ms(int time){
+  cnt2 = 64UL*time/1000UL;
+//  cnt2 = 48*(1000/1000);
+  startTimer(02b111);
+  while(!isTimerDone);
+  stopTimer();
 }
 ISR(INT0_vect){
   if(flag == 0) flag = 1;
   else flag = 0;
-
-  if(flag == 1){
-    TCCR2B = 0b111 << CS20; // ClkT2S / 1024
-  }
-  else {
-    TCCR2B = 0;
-  }
+  LED1(flag);
 }
+
 ISR(TIMER2_OVF_vect){
-  cnt2++;
-  // flag = 1;
-  // cnt2는 1024 / CPU_SPEED 초마다 1씩 증가한다. (prescale=1024)
-  // 내가 알고 싶은거는 max의 값!
-  // delay/1000 초가 지났을 때 cnt2의 값은? -> 이 값이 max의 값이 된다.
-  // 1024/CPU_SPEED : 1 = delay/1000 : cnt2
-  // delay / 1000 = cnt2 * 1024 / CPU_SPEED
-  // CPU_SPEED / 1024 * delay / 1000 = cnt2
-  // cnt2 = CPU_SPEED * delay;  
-//  static int threshold = CPU_SPEED * delay / 1024000;
-  if(cnt2 % 16 == 0){ 
-    if(flag2 == 0) flag2 = 1;
-    else flag2 = 0;
-    LED2(flag2);
-  }  
+  if(cnt2 != 0){
+    cnt2--;
+    if(cnt2 == 0){
+      isTimerDone = 1;
+    }
+  }
 }
