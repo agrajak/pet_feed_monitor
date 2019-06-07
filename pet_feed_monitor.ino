@@ -5,7 +5,7 @@
 #define COM_CURRENT_CLOCK 4
 #define ADDR_DS1307 0b1101000
 #define ADDR_24LC02B 0b1010000
-
+#define CPU_SPEED 16000000 // for test arduino, Fcpu is 1200000(12Mhz)
 #define DEBUG 0
 #define BLUETOOTH_LISTEN 1
 uint8_t data;
@@ -20,9 +20,12 @@ void initLEDs(){
   DDRD |= (1 << DDD5) | (1 << DDD6) | (1 << DDD7); // make LED1, LED2 OUTPUT
   DDRB |= (1 << DDB0) | (1 << DDB1) | (1 << DDB2) | (1 << DDB3) | (1 << DDB4);
 }
+uint8_t readBit(int addr, uint8_t loc){
+  return (addr & (1<<loc)) >> loc;
+}
 void LED1(int a){ PORTD = (PORTD & ~(1<<PORTD6)) | (a<<PORTD6); }
 void LED2(int a){ PORTD = (PORTD & ~(1<<PORTD7)) | (a<<PORTD7); }
-void LED3(int a){ PORTB = (PORTB & ~(1<<PORTB0)) | (a<<PORTB0); }
+void LED3(int a){ PORTB = (PORTB & ~(1<<PORTB0)) | (a<<PORTB0); } 
 void LED4(int a){ PORTD = (PORTD & ~(1<<PORTD5)) | (a<<PORTD5); }
 void LED5(int a){ PORTB = (PORTB & ~(1<<PORTB1)) | (a<<PORTB1); }
 void LED6(int a){ PORTB = (PORTB & ~(1<<PORTB2)) | (a<<PORTB2); }
@@ -103,7 +106,7 @@ uint8_t readTWI(uint8_t addr){
   clearTWCR(); 
   data = TWDR; 
 
-  clearTWCR(); // ====> WORD ADDRESS
+  clearTWCR(); // ====> VALUE
   if((TWSR & 0xF8) != 0x50 && (TWSR & 0xF8) != 0x58) { debugValue(6); stopTWI();  return (TWSR & 0xF8); }
 
   stopTWI(); // ====> STOP
@@ -246,20 +249,32 @@ void initDelay(){
       }
     }
   */
+
+  // 8bit Timer/Counter2 with PWM and Asynchoronous Operation p.155
+
+  // Timer/Counter2 Control Register A - controls the Output Compare pin (OC2A) behavior.
+
+  TCCR2A = 0; // OC0A, OC0B disabled, Wave Form Generator : Normal Mode!
+  // Update of OCRx at Immediate, TOV flag set on MAX. (p.164)
+
+  // Timer/Counter2 Control Register B - CS22:0, (Clock Select)  
+  TCCR2B = 0b111 << CS20; // ClkT2S / 1024
+
+  // we can stop time/counter2 clock by set TCCR2B = 0;
+  
+  // Timer/Counter2 Interrupt Mask Register
+  TIMSK2 = 1 << TOIE2; // Timer/Counter2 Overflow Interrupt Enable
+
+  // Timer/Counter2 Interrupt Flag Register (p.167)
+  // TIFR2
+  // Asynchoronous Status Register (p.167)
+  ASSR = (1 << EXCLK | 0 << AS2);
 }
 int main(){
   initLEDs();
   initDelay();
   while(1){
-/*    if(EIFR & (1 << INTF0)){
-      flag != flag;
-      EIFR &= ~(1 << INTF0);
-      LED2(flag);
-    }*/
   }
-//  Serial.begin(9600);
-  //initUART();
-  //LED2(1);
   if(BLUETOOTH_LISTEN) initTWI();
 
   // 스위치의 위치 : PD2 (INT0) -- Uno 2번
@@ -295,8 +310,28 @@ int main(){
     }
   }
 }
+uint8_t flag2 = 0;
 ISR(INT0_vect){
-  if(flag == 0) flag = 1;
-  else flag = 0;
-  LED2(flag);
+  
+  if(flag2 == 0) flag2 = 1;
+  else flag2 = 0;
+  if(flag2 == 1){
+    TCCR2B = 0b111 << CS20; // ClkT2S / 1024
+  }
+  else {
+    TCCR2B = 0;
+  }
+  
+}
+int cnt2 = 0;
+ISR(TIMER2_OVF_vect){
+  cnt2++;
+  if(cnt2 % 12 == 0){
+    if(flag == 0) flag = 1;
+    else flag = 0;
+    LED2(flag);
+  }
+  // 
+  /*
+  */
 }
