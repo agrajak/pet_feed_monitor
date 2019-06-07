@@ -8,18 +8,69 @@
 #define CPU_SPEED 16000000 // for test arduino, Fcpu is 1200000(12Mhz)
 #define DEBUG 1
 #define BLUETOOTH_LISTEN 1
-uint8_t data;
+volatile uint8_t data;
 
-char rBuf[30];
-char wBuf[50];
-char rcnt, wcnt;
-int cnt;
-uint8_t flag = 0;
+volatile char rBuf[30];
+volatile char wBuf[50];
+volatile char rcnt, wcnt;
+volatile int cnt;
+volatile int cnt2 = 0;
+volatile uint8_t flag = 0;
+volatile uint8_t flag2 = 0;
+volatile uint8_t SLAVE_ADDR;
+
+
 // following interrupt vector names referenced from http://ee-classes.usc.edu/ee459/library/documents/avr_intr_vectors/
 void initLEDs(){
   DDRD |= (1 << DDD4); // LED3
   DDRB |= (1 << DDB1) | (1 << DDB2); // LED1 and LED2
 }
+
+void initDelay(){
+  // External Interrupt Guide on p.79
+  // AVR Status Register p.20
+  // External Interrupt Mask Register
+  SREG = 1 << 7;
+  EIMSK = (1 << INT0); // External Interrupt 0 is enabled.
+  // External Interrupt Control Register A
+  EICRA = (1 << ISC01) | (1 << ISC00); // rising edge of INT0 generate an interrupt request. 
+
+//  SREG |= 1 << 7;
+
+  /*
+  // +) ISR 없이 인터럽트 체크하기
+    while(1){
+      if(EIFR & (1 << INTF0)){
+        flag != flag;
+        EIFR &= ~(1 << INTF0);
+        LED2(flag);
+      }
+    }
+  */
+
+  // 8bit Timer/Counter2 with PWM and Asynchoronous Operation p.155
+
+  // Timer/Counter2 Control Register A - controls the Output Compare pin (OC2A) behavior.
+
+/*
+  TCCR2A = 0; // OC0A, OC0B disabled, Wave Form Generator : Normal Mode!
+  // Update of OCRx at Immediate, TOV flag set on MAX. (p.164)
+
+  // Timer/Counter2 Control Register B - CS22:0, (Clock Select)  
+  TCCR2B = 0b111 << CS20; // ClkT2S / 1024
+
+  // we can stop time/counter2 clock by set TCCR2B = 0;
+  
+  // Timer/Counter2 Interrupt Mask Register
+  TIMSK2 = 1 << TOIE2; // Timer/Counter2 Overflow Interrupt Enable
+
+  // Timer/Counter2 Interrupt Flag Register (p.167)
+  // TIFR2
+  // Asynchoronous Status Register (p.167)
+  ASSR = (0 << EXCLK | 1 << AS2);
+  */
+}
+
 uint8_t readBit(int addr, uint8_t loc){
   return (addr & (1<<loc)) >> loc;
 }
@@ -28,7 +79,7 @@ void LED2(int a){ PORTB = (PORTB & ~(1<<PORTB2)) | (a<<PORTB2); }
 void LED3(int a){ PORTD = (PORTD & ~(1<<PORTD4)) | (a<<PORTD4); } 
 
 void debugValue(uint8_t v){
-    if(DEBUG){
+  if(DEBUG){
     LED1(v & 1);
     LED2((v & (1<<1)) >> 1);
     LED3((v & (1<<2)) >> 2);
@@ -52,7 +103,7 @@ void initUART(){
 
   // Transmit and Recievie Examples on Manual 186page
 }
-uint8_t SLAVE_ADDR;
+
 void setSlaveAddr(uint8_t addr){
   SLAVE_ADDR = addr;
 }
@@ -79,25 +130,25 @@ uint8_t readTWI(uint8_t addr){
 
   uint8_t data;
   startTWI();  // ====> START
-  if((TWSR & 0xF8) != 0x08) { debugValue(1); return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x08) { respondByte(TWSR & 0xF8); return (TWSR & 0xF8); }
   
   sendSLARW(0);   // ====> SLA+W
-  if((TWSR & 0xF8) != 0x18) { debugValue(2); stopTWI(); return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x18) { respondByte(TWSR & 0xF8); stopTWI(); return (TWSR & 0xF8); }
   
   TWDR = addr; 
   clearTWCR(); // ====> WORD ADDRESS
-  if((TWSR & 0xF8) != 0x28) { debugValue(3); stopTWI();  return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x28) { respondByte(TWSR & 0xF8); stopTWI();  return (TWSR & 0xF8); }
 
   startTWI();  // ====> RE-START
-  if((TWSR & 0xF8) != 0x10) { debugValue(4); stopTWI();  return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x10) { respondByte(TWSR & 0xF8); stopTWI();  return (TWSR & 0xF8); }
 
   sendSLARW(1);   // ====> SLA+R
-  if((TWSR & 0xF8) != 0x40) { debugValue(5); stopTWI();  return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x40) { respondByte(TWSR & 0xF8); stopTWI();  return (TWSR & 0xF8); }
   clearTWCR(); 
   data = TWDR; 
 
   clearTWCR(); // ====> VALUE
-  if((TWSR & 0xF8) != 0x50 && (TWSR & 0xF8) != 0x58) { debugValue(6); stopTWI();  return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x50 && (TWSR & 0xF8) != 0x58) { respondByte(6); stopTWI();  return (TWSR & 0xF8); }
 
   stopTWI(); // ====> STOP
   
@@ -106,18 +157,18 @@ uint8_t readTWI(uint8_t addr){
 uint8_t writeTWI(uint8_t addr, uint8_t data){
   // Master Trasmitter TWSR 정리는 227페이지에 있음!
   startTWI();  // ====> START
-  if((TWSR & 0xF8) != 0x08) { debugValue(7); return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x08) { respondByte(TWSR & 0xF8); return (TWSR & 0xF8); }
 
   sendSLARW(0);   // ====> SLA+W
-  if((TWSR & 0xF8) != 0x18) { debugValue(8); stopTWI();  return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x18) { respondByte(TWSR & 0xF8); stopTWI();  return (TWSR & 0xF8); }
   
   TWDR = addr; 
   clearTWCR(); // ====> WORD ADDRESS
-  if((TWSR & 0xF8) != 0x28) { debugValue(9); stopTWI();  return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x28) { respondByte(TWSR & 0xF8); stopTWI();  return (TWSR & 0xF8); }
 
   TWDR = data; 
   clearTWCR(); // ====> WORD ADDRESS
-  if((TWSR & 0xF8) != 0x28) { debugValue(10); stopTWI();  return (TWSR & 0xF8); }
+  if((TWSR & 0xF8) != 0x28) { respondByte(TWSR & 0xF8); stopTWI();  return (TWSR & 0xF8); }
 
   stopTWI();   // ====> STOP
 }
@@ -161,6 +212,10 @@ void respond(char *buf){
   UDR0 = '\r';    
   while(!(UCSR0A & (1<<UDRE0)));
   UDR0 = '\n';    
+}
+void respondByte(uint8_t value){
+  sprintf(wBuf, "[%x]", value);
+  respond(wBuf);
 }
 void getCurrentClock();
 void setCurrentClock();
@@ -220,57 +275,15 @@ void getCurrentClock(){
   sprintf(wBuf, "hour is %d", h);
   respond(wBuf);
 }
-void initDelay(){
-  // External Interrupt Guide on p.79
-  // AVR Status Register p.20
-  SREG |= 1 << 7;
-  // External Interrupt Mask Register
-  EIMSK = (1 << INT0) | (1 << INT1); // External Interrupt 0 is enabled.
-  // External Interrupt Control Register A
-  EICRA = (1 << ISC01) | (1 << ISC00) | (1 << ISC11) | (1 << ISC10); // rising edge of INT0 generate an interrupt request. 
-
-  /*
-  // +) ISR 없이 인터럽트 체크하기
-    while(1){
-      if(EIFR & (1 << INTF0)){
-        flag != flag;
-        EIFR &= ~(1 << INTF0);
-        LED2(flag);
-      }
-    }
-  */
-
-  // 8bit Timer/Counter2 with PWM and Asynchoronous Operation p.155
-
-  // Timer/Counter2 Control Register A - controls the Output Compare pin (OC2A) behavior.
-
-/*
-  TCCR2A = 0; // OC0A, OC0B disabled, Wave Form Generator : Normal Mode!
-  // Update of OCRx at Immediate, TOV flag set on MAX. (p.164)
-
-  // Timer/Counter2 Control Register B - CS22:0, (Clock Select)  
-  TCCR2B = 0b111 << CS20; // ClkT2S / 1024
-
-  // we can stop time/counter2 clock by set TCCR2B = 0;
-  
-  // Timer/Counter2 Interrupt Mask Register
-  TIMSK2 = 1 << TOIE2; // Timer/Counter2 Overflow Interrupt Enable
-
-  // Timer/Counter2 Interrupt Flag Register (p.167)
-  // TIFR2
-  // Asynchoronous Status Register (p.167)
-  ASSR = (0 << EXCLK | 1 << AS2);
-  */
-}
 int main(){
   initLEDs();
   if(BLUETOOTH_LISTEN) initUART();
+  initTWI();
   initDelay();
 
   LED1(1);
   LED3(1);
 
-  initTWI();
   if(DEBUG){
     
     respond("EEPROM TEST START!");
@@ -292,6 +305,15 @@ int main(){
     respond("EEPROM TEST DONE!");
     
     respond("hihi2!");
+
+    while(1){
+      if(EIFR & (1 << INTF0)){
+        flag != flag;
+        EIFR &= ~(1 << INTF0);
+        LED2(flag);
+      }
+    }
+
     while(1){
       if(BLUETOOTH_LISTEN){
       // wait until RX will be prepared!
@@ -302,20 +324,18 @@ int main(){
     }
   }
 }
-uint8_t flag2 = 0;
-ISR(INT0_vect){
-  respond("hi");
-  if(flag2 == 0) flag2 = 1;
-  else flag2 = 0;
-  LED2(flag2);
-  if(flag2 == 1){
+//ISR(INT0_vect){
+//  respond("hi");
+//  if(flag2 == 0) flag2 = 1;
+//  else flag2 = 0;
+//  LED2(flag2);
+//  if(flag2 == 1){
 //    TCCR2B = 0b111 << CS20; // ClkT2S / 1024
-  }
-  else {
+//  }
+//  else {
 //    TCCR2B = 0;
-  }
-}
-int cnt2 = 0;
+//  }
+//}
 /*
 ISR(TIMER2_OVF_vect){
   cnt2++;
