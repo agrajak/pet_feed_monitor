@@ -2,11 +2,15 @@
   SUHYUN, JEON - 전수현(12151616), korbots@gmail.com
 */
 
+#define COM_UNKNOWN 0
 #define COM_HELLO 1
 #define COM_INIT_CLOCK 2
 #define COM_SET_CLOCK 3
 #define COM_CURRENT_CLOCK 4
+#define COM_HELP 5
+#define COM_GET_WEIGHT 6
 
+// UART rBuf is waiting for ...
 #define COMMAND 0 
 #define CURRENT_TIME 1
 
@@ -14,7 +18,8 @@
 #define ADDR_24LC02B 0b1010000
 
 #define DEBUG 1
-#define BLUETOOTH_LISTEN 0
+#define BLUETOOTH_LISTEN 1
+#define VERBOSE 1
 
 volatile uint8_t data;
 volatile uint8_t waitingFor;
@@ -25,35 +30,45 @@ volatile uint8_t rcnt, wcnt;
 volatile uint8_t SLAVE_ADDR;
 volatile int cnt;
 volatile int cnt2=0;
-// boolean flag =>
+// boolean flags, can be optimzied by set/clear uint8_t.
 volatile uint8_t flag = 0, flag2 = 0;
 volatile uint8_t isTimerDone = 0;
 volatile uint8_t hasError = 0;
+volatile uint8_t DT = 0;
+
 //////////////////////////////// -- INIT REGISTERS --- ///////////////////////////////////
 
 // following interrupt vector names referenced from http://ee-classes.usc.edu/ee459/library/documents/avr_intr_vectors/
 void initLEDs(){
-  DDRD |= (1 << DDD4); // LED3
+  DDRD |= (1 << DDD4) | (1 << DDD7); // LED3
   DDRB |= (1 << DDB1) | (1 << DDB2); // LED1 and LED2
+  // PD3 -> INT1
+  // PD4 -> SCK for HX711
 }
-void LED1(int a){ 
+void initADC(){
+
+}
+void LED1(uint8_t a){ 
   PORTB = (PORTB & ~(1<<PORTB1)) | (a<<PORTB1);
 }
-void LED2(int a){
+void LED2(uint8_t a){
   PORTB = (PORTB & ~(1<<PORTB2)) | (a<<PORTB2); 
 }
-void LED3(int a){
+void LED3(uint8_t a){
   PORTD = (PORTD & ~(1<<PORTD4)) | (a<<PORTD4);
 } 
-
+void togglePulse(uint8_t a){
+  PORTD = (PORTD & ~(1<<PORTD7)) | (a<<PORTD7);
+}
 void initDelay(){
   // External Interrupt Guide on p.79
   // AVR Status Register p.20
   // External Interrupt Mask Register
   // SREG |= 1 << 7;
-  EIMSK = (1 << INT0); // External Interrupt 0 is enabled.
+
+  EIMSK = (1 << INT0) | (0 << INT1); // External Interrupt 0 is enabled.
   // External Interrupt Control Register A
-  EICRA = (1 << ISC01) | (1 << ISC00); // rising edge of INT0 generate an interrupt request. 
+  EICRA = (1 << ISC01) | (1 << ISC00) | (0 << ISC11) | (0 << ISC10); // rising edge of INT0 generate an interrupt request. 
   /*
   // +) ISR 없이 인터럽트 체크하기
     while(1){
@@ -114,7 +129,6 @@ void initUART(){
 }
 void initTWI(){ // p.225
   // SCL freq =  16000khz / 16 + 2(TWBR)(PresclaeValue)
-
   // 16 + 2TWBR = 160
   // Target : SCL : 100Khz
   // TWBR = 72
@@ -147,7 +161,9 @@ void startTimer(uint8_t);
 void stopTimer();
 void delay_ms(int);
 void delay_us(int);
-
+// - HX711 (24bit ADC)
+uint32_t getWeight();
+void togglePulse(uint8_t);
 //     ## Miscellaneous ##
 
 void debugValue(uint8_t);
@@ -245,19 +261,26 @@ uint8_t writeTWI(uint8_t addr, uint8_t data){
   stopTWI();   // ====> STOP
 }
 int verifyCommand(){
-  if(rBuf[0]=='H' && rBuf[1]=='I'){
-    return COM_HELLO;
-  }
-  if(rBuf[0]=='C' && rBuf[1]=='T'){
+  // TODO: checkout rcnt length!
+  if(rBuf[0]=='H'){
+    if(rBuf[1] == 'I') return COM_HELLO;
+    else if(rBuf[1] =='E' && rBuf[2] == 'L' && rBuf[3] == 'P'){
+      return COM_HELP;
+    }
+  }    
+  else if(rBuf[0]=='C' && rBuf[1]=='T'){
     return COM_CURRENT_CLOCK;
   }
-  if(rBuf[0]=='I' && rBuf[1]=='T'){
+  else if(rBuf[0]=='I' && rBuf[1]=='T'){
     return COM_INIT_CLOCK;
   }
-  if(rBuf[0]=='S' && rBuf[1]=='T'){
+  else if(rBuf[0]=='S' && rBuf[1]=='T'){
     return COM_SET_CLOCK;
   }
-  return NULL;
+  else if(rBuf[0] == 'X'){
+    return COM_GET_WEIGHT;
+  }
+  return COM_UNKNOWN;
 }
 void respond(char *buf){
   for(int i=0;;i++){
@@ -275,18 +298,20 @@ void respondByte(uint8_t value){
   respond(wBuf);
 }
 void checkNextLine(){
-  // if next line detected ->
+  uint32_t v;
+  // if next line detected
   if(rcnt>= 2 && rBuf[rcnt-2] == '\r' && rBuf[rcnt-1] == '\n'){ // if \n\r is recieved!
     rcnt-=2;
     rBuf[rcnt] = 0;
-    sprintf(wBuf, "[rcnt:%d,buf:%s]", rcnt, rBuf);
-    rcnt = 0;
-    respond(wBuf);
+    if(VERBOSE){
+      sprintf(wBuf, "[rcnt:%d,buf:%s]", rcnt, rBuf);
+      respond(wBuf);
+    }
     if(waitingFor == COMMAND){
       switch(verifyCommand()){
         case COM_HELLO:
           LED3(1);
-          respond("nice to meet you!");
+          respond("Nice to meet you!");
           LED3(0);
           break;
         case COM_CURRENT_CLOCK:
@@ -297,11 +322,19 @@ void checkNextLine(){
         case COM_SET_CLOCK:
           respond("Type Current Time in following format:");
           respond("YYYY:MM:DD-hh:mm");          
-          LED3(0);
+          waitingFor = CURRENT_TIME;
           break;
         case COM_INIT_CLOCK:
           LED3(1);
           initClock();
+          LED3(0);
+          break;
+        case COM_GET_WEIGHT:
+          LED3(1);
+          v = getWeight();
+          sprintf(wBuf, "weight is %ld, %u(%d)", v, v, v);
+          respond(wBuf);
+          respond("Send Signal Done!");
           LED3(0);
           break;
         default:
@@ -310,13 +343,14 @@ void checkNextLine(){
       }
     }
     else if(waitingFor == CURRENT_TIME){
-        if(rcnt != 20) respond("Invalid Format!");
+        if(rcnt != 16) respond("Invalid Format!, input should be 16 characters");
         else if(rBuf[0] != '2' || rBuf[1] != '0') respond("YYYY should be 20xx!");
         else {
           setCurrentTime(rBuf);
         }
         waitingFor = COMMAND;
     }
+    rcnt = 0;
   }
 }
 void initClock(){
@@ -328,17 +362,23 @@ void initClock(){
   sprintf(wBuf, "0x00 : %x", d);
   respond(wBuf);
 }
+
 void setCurrentTime(char *buf){
   uint8_t s, m, h, D, M, Y, d, ct;
   if(buf[4] == buf[7] && buf[7] == buf[13] && buf[13] == ':' && buf[10] == '-'){
+    hasError = false;
     Y = charToInt(buf, 2, 4);
     M = charToInt(buf, 5, 7);
     D = charToInt(buf, 8, 10);
     h = charToInt(buf, 11, 13);
     m = charToInt(buf, 14, 16);
     s = 0;
-    sprintf(wBuf, "Y=20%d, M=%d, D=%d h=%d, m=%d, s=%d", Y, M, D, h, m, s);
-    respond(wBuf);
+    if(VERBOSE){
+      sprintf(wBuf, "Y=20%d, M=%d, D=%d h=%d, m=%d, s=%d", Y, M, D, h, m, s);
+      respond(wBuf);
+    }
+    if(hasError)
+      respond("Invalid digits detected!");
     return;
   }
   respond("Invalid Format");
@@ -366,7 +406,7 @@ int main(){
   initTWI();
   initDelay();    
 
-  if(DEBUG){
+  if(VERBOSE){
     respond("EEPROM TEST START!");
     setSlaveAddr(ADDR_24LC02B);
     writeTWI(0x00, 0x23);
@@ -381,19 +421,10 @@ int main(){
       respond("EEPROM TEST FAILED!");
     }
   }
-/*
-    while(1){
-      if(EIFR & (1 << INTF0)){
-        if(flag == 0) flag = 1;
-        else flag = 0;
-        flag != flag;
-        EIFR &= ~(1 << INTF0);
-        LED2(flag);
-      }
-    }
-*/
   uint8_t flag3 = 0;
+  LED1(1);
   while(1){
+
     if(BLUETOOTH_LISTEN){
     // wait until RX will be prepared!      
       while(!(UCSR0A & (1<<RXC0)));
@@ -419,7 +450,8 @@ void stopTimer(){
 }
 void delay_us(int time){
   // embedded C에서 int의 크기가 16비트임을 주의!
-  cnt2 = 64UL*time/1000UL;
+//  cnt2 = 64UL*time/1000UL;
+  cnt2 = 1;
   startTimer(0b001);
   while(!isTimerDone); // ISR에서 isTimerDone 토글!
   stopTimer();
@@ -430,7 +462,7 @@ void delay_ms(int time){
   while(!isTimerDone);
   stopTimer();
 }
-// ISR 
+// ISR
 ISR(INT0_vect){
   if(flag == 0) flag = 1;
   else flag = 0;
@@ -444,9 +476,56 @@ ISR(TIMER2_OVF_vect){
 }
 uint8_t charToInt(char *buf, uint8_t _start, uint8_t _end){
   uint8_t v = 0, d = 1, i;
-  for(i=_end;i>=_start;i--){
-    v += buf[i]*d;
-    d *= 10;    
+  for(i=_end-1;i>=_start;i--){
+    // Digit Check!
+    if(buf[i] >= '0' & buf[i] <='9'){
+      v += (buf[i]-'0')*d;
+      d *= 10;    
+    }
+    else {
+      hasError = true;
+      break;
+    }
   }   
+  return v;
+}
+
+uint32_t getWeight(){
+  uint8_t i, s; 
+  uint32_t v=0, sum =0;
+  uint8_t highPeriod = 40, data[3]={0}, pos=7;
+  // HX711 datasheet p.5
+
+  // Pulse 25번 -> GAIN 128
+  // Pulse 27번 -> GAIN 64
+  // MSB --------------------- LSB
+  
+  for(i=0;i<8;i++){
+    togglePulse(1); delay_us(10);
+    data[2] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
+    delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
+  }
+  for(i=0;i<8;i++){
+    togglePulse(1); delay_us(10);
+    data[1] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
+    delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
+  }
+  for(i=0;i<8;i++){
+    togglePulse(1); delay_us(10);
+    data[0] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
+    delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
+  }
+  for(i=0;i<1;i++){
+    togglePulse(1); delay_us(10); delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
+  }
+
+  v = ( static_cast<unsigned long>((data[2] & 0x80) ? 0xFF : 0x00) << 24
+			| static_cast<unsigned long>(data[2]) << 16
+			| static_cast<unsigned long>(data[1]) << 8
+			| static_cast<unsigned long>(data[0]) );
+      
+  sprintf(wBuf, "%x|%x|%x, v = %ld", data[2], data[1], data[0], v);
+  respond(wBuf);
+
   return v;
 }
