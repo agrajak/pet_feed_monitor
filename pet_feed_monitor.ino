@@ -156,6 +156,21 @@ uint8_t readTWI(uint8_t);
 uint8_t writeTWI(uint8_t, uint8_t);
 // - TWI(EEPROM)
 void loadClock(); // using EEPROM
+// - TWI(DS1307)
+uint8_t getSecond(uint8_t);
+uint8_t getMinute(uint8_t);
+uint8_t getHour(uint8_t);
+uint8_t getDate(uint8_t);
+uint8_t getMonth(uint8_t);
+uint8_t getYear(uint8_t);
+
+void setSecond(uint16_t, uint8_t);
+void setMinute(uint16_t, uint8_t);
+void setHour(uint16_t, uint8_t);
+void setDate(uint16_t, uint8_t);
+void setMonth(uint16_t, uint8_t);
+void setYear(uint16_t, uint8_t);
+uint8_t decimalTo8bit(uint8_t);
 // - Time/Counter2
 void startTimer(uint8_t);
 void stopTimer();
@@ -384,21 +399,16 @@ void setCurrentTime(char *buf){
   respond("Invalid Format");
 }
 void getCurrentTime(){
-  setSlaveAddr(ADDR_DS1307);
   uint8_t s, m, h, D, M, Y, d, ct;
-  d = readTWI(0x00);
-  ct = d & 0x80 >> 7;
-  s = ((d & 0x70)>>4) * 10 + (d & 0x0F);
-  sprintf(wBuf, "second is %d", s);
-  respond(wBuf);
-  d = readTWI(0x01);
-  m = ((d & 0x70)>>4) * 10 + (d & 0x0F);
-  sprintf(wBuf, "minute is %d", m);
-  respond(wBuf);
-  d = readTWI(0x02);
-  h = ((d & 0x10)>>4) * 10 + (d & 0x0F);
-  sprintf(wBuf, "hour is %d", h);
-  respond(wBuf);
+
+  setSlaveAddr(ADDR_DS1307);
+  s = getSecond(readTWI(0x00));
+  m = getMinute(readTWI(0x01));
+  h = getHour(readTWI(0x02));
+  D = getDate(readTWI(0x04));
+  M = getMonth(readTWI(0x05));
+  Y = getYear(readTWI(0x06));
+
 }
 int main(){
   initLEDs();
@@ -529,3 +539,35 @@ uint32_t getWeight(){
 
   return v;
 }
+uint8_t getSecond(uint8_t addr){
+  return ((addr & 0x70)>>4) * 10 + (addr & 0x0F);
+}
+uint8_t getMinute(uint8_t addr){
+  return ((addr & 0x70)>>4) * 10 + (addr & 0x0F);
+}
+uint8_t getHour(uint8_t addr){
+  return ((addr & 0x10)>>4) * 10 + (addr & 0x0F);
+}
+uint8_t getDate(uint8_t addr){
+  return ((addr & 0x30)>>4) * 10 + (addr & 0x0F);
+}
+uint8_t getMonth(uint8_t addr){
+  return ((addr & 0x10)>>4) * 10 + (addr & 0x0F);
+}
+uint8_t getYear(uint8_t addr){
+  return ((addr & 0xF0)>>4) * 10 + (addr & 0x0F);
+}
+
+uint8_t decimalTo8bit(uint8_t v){
+  return ((v/10)<<4) | (v%10);
+}
+
+// EEPROM 배치도 2048 byte => 2^11
+// ------------------------------------------------------ 
+// 0x000: 몇개의 정보가 저장되어있는가?
+// 0x001 ~ 0x006: 제일 최근에 저장된 날짜 (장비가 켜질때 해당 시간을 불러온다.)
+// 0x007 ~ 0x00C: 제일 마지막에 사료량을 기록한 날짜
+
+// 0x006+n*7 ~ 0x00C+n*7: n번째 정보의 날짜(Y-M-D:h-m-s)
+// 0x00D+n*7: n번째 정보의 사료량 (최대 256g)
+
