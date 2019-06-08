@@ -1,28 +1,34 @@
+/*
+  SUHYUN, JEON - 전수현(12151616), korbots@gmail.com
+*/
 
 #define COM_HELLO 1
 #define COM_INIT_CLOCK 2
 #define COM_SET_CLOCK 3
 #define COM_CURRENT_CLOCK 4
 
+#define COMMAND 0 
+#define CURRENT_TIME 1
+
 #define ADDR_DS1307 0b1101000
 #define ADDR_24LC02B 0b1010000
 
-#define TC2_SCALE 0b111 // checkout 
-
-#define CPU_SPEED 16000000 // for test arduino, Fcpu is 1200000(12Mhz)
 #define DEBUG 1
 #define BLUETOOTH_LISTEN 0
 
 volatile uint8_t data;
+volatile uint8_t waitingFor;
 
 volatile char rBuf[30];
 volatile char wBuf[50];
-volatile char rcnt, wcnt;
+volatile uint8_t rcnt, wcnt;
+volatile uint8_t SLAVE_ADDR;
 volatile int cnt;
 volatile int cnt2=0;
+// boolean flag =>
 volatile uint8_t flag = 0, flag2 = 0;
-volatile uint8_t SLAVE_ADDR;
 volatile uint8_t isTimerDone = 0;
+volatile uint8_t hasError = 0;
 //////////////////////////////// -- INIT REGISTERS --- ///////////////////////////////////
 
 // following interrupt vector names referenced from http://ee-classes.usc.edu/ee459/library/documents/avr_intr_vectors/
@@ -91,10 +97,10 @@ void initUART(){
   
   // UCSR0B = (1<<RXCIE0) | (1<<TXCIE0) | (1<<RXEN0) | (1<<TXEN0);
 
-  // <뇌절노트> - 쓰지도 않는 Interrupt를 켜놓고 SREG = 1<<I를 해서
+  // <삽질노트> - 쓰지도 않는 Interrupt를 켜놓고 SREG = 1<<I를 해서
   // 글로벌 인터럽트를 Enable 시켜버리니까
-  // Interrupt를 처리하다가 Stack Overflow로 프로그램이 계속 실행됨.
-  // => 사용안하는 RXCI, TXCI 제거
+  // Interrupt를 처리하다가 Stack Overflow로 main 함수가 무한 반복됨.
+  // => 사용하지도 않는 RXCI, TXCI 끄기
 
   // Master, Reciever Enable!
   UCSR0B = (1 << RXEN0) | (1 << TXEN0);
@@ -121,31 +127,36 @@ void initTWI(){ // p.225
 
 /////////////////////////////// -- PROTOTYPES -- ///////////////////////////
 
+//     ## COMMUNICATION ##
+
+// - UART
 void respond(char *);
 void respondByte(uint8_t);
-void debugValue(uint8_t v);
+// - TWI(I2C)
 void setSlaveAddr(uint8_t);
 void senSLARW(int);
 void startTWI();
 void stopTWI();
 void clearTWCR();
-
 uint8_t readTWI(uint8_t);
 uint8_t writeTWI(uint8_t, uint8_t);
-
-int verifyCommand();
-void respond(char *);
-void respondByte(uint8_t);
-
-void getCurrentClock();
-void setCurrentClock();
-void initClock();
-
-void do_command();
-
+// - TWI(EEPROM)
+void loadClock(); // using EEPROM
+// - Time/Counter2
 void startTimer(uint8_t);
 void stopTimer();
 void delay_ms(int);
+void delay_us(int);
+
+//     ## Miscellaneous ##
+
+void debugValue(uint8_t);
+int verifyCommand();
+void checkNextLine();
+void getCurrentTime();
+void setCurrentTime(char *);
+void initClock();
+uint8_t charToInt(char *, uint8_t, uint8_t);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -177,6 +188,8 @@ void startTWI(){
 void stopTWI(){
   TWCR = (1<<TWINT) | (1<<TWSTO) | (1<<TWEN); 
   while(!(TWCR & (1<<TWSTO)));
+
+  delay_ms(50);
 }
 void clearTWCR(){
   TWCR = (1<<TWINT) | (1<<TWEN);
@@ -261,37 +274,48 @@ void respondByte(uint8_t value){
   sprintf(wBuf, "[%x]", value);
   respond(wBuf);
 }
-void do_command(){
+void checkNextLine(){
+  // if next line detected ->
   if(rcnt>= 2 && rBuf[rcnt-2] == '\r' && rBuf[rcnt-1] == '\n'){ // if \n\r is recieved!
     rcnt-=2;
     rBuf[rcnt] = 0;
     sprintf(wBuf, "[rcnt:%d,buf:%s]", rcnt, rBuf);
     rcnt = 0;
     respond(wBuf);
-    switch(verifyCommand()){
-      case COM_HELLO:
-        LED3(1);
-        respond("nice to meet you!");
-        LED3(0);
-        break;
-      case COM_CURRENT_CLOCK:
-        LED3(1);
-        getCurrentClock();
-        LED3(0);
-        break;
-      case COM_SET_CLOCK:
-        LED3(1);
-        setCurrentClock();
-        LED3(0);
-        break;
-      case COM_INIT_CLOCK:
-        LED3(1);
-        initClock();
-        LED3(0);
-        break;
-      default:
-        respond("Undeclared Command!");
-        break;
+    if(waitingFor == COMMAND){
+      switch(verifyCommand()){
+        case COM_HELLO:
+          LED3(1);
+          respond("nice to meet you!");
+          LED3(0);
+          break;
+        case COM_CURRENT_CLOCK:
+          LED3(1);
+          getCurrentTime();
+          LED3(0);
+          break;
+        case COM_SET_CLOCK:
+          respond("Type Current Time in following format:");
+          respond("YYYY:MM:DD-hh:mm");          
+          LED3(0);
+          break;
+        case COM_INIT_CLOCK:
+          LED3(1);
+          initClock();
+          LED3(0);
+          break;
+        default:
+          respond("Undeclared Command!");
+          break;
+      }
+    }
+    else if(waitingFor == CURRENT_TIME){
+        if(rcnt != 20) respond("Invalid Format!");
+        else if(rBuf[0] != '2' || rBuf[1] != '0') respond("YYYY should be 20xx!");
+        else {
+          setCurrentTime(rBuf);
+        }
+        waitingFor = COMMAND;
     }
   }
 }
@@ -304,10 +328,22 @@ void initClock(){
   sprintf(wBuf, "0x00 : %x", d);
   respond(wBuf);
 }
-void setCurrentClock(){
-
+void setCurrentTime(char *buf){
+  uint8_t s, m, h, D, M, Y, d, ct;
+  if(buf[4] == buf[7] && buf[7] == buf[13] && buf[13] == ':' && buf[10] == '-'){
+    Y = charToInt(buf, 2, 4);
+    M = charToInt(buf, 5, 7);
+    D = charToInt(buf, 8, 10);
+    h = charToInt(buf, 11, 13);
+    m = charToInt(buf, 14, 16);
+    s = 0;
+    sprintf(wBuf, "Y=20%d, M=%d, D=%d h=%d, m=%d, s=%d", Y, M, D, h, m, s);
+    respond(wBuf);
+    return;
+  }
+  respond("Invalid Format");
 }
-void getCurrentClock(){
+void getCurrentTime(){
   setSlaveAddr(ADDR_DS1307);
   uint8_t s, m, h, D, M, Y, d, ct;
   d = readTWI(0x00);
@@ -334,21 +370,17 @@ int main(){
     respond("EEPROM TEST START!");
     setSlaveAddr(ADDR_24LC02B);
     writeTWI(0x00, 0x23);
-    respond("Writing to 0x00 Complete");
     writeTWI(0x01, 0x34);
-    respond("Writing to 0x01 Complete");
     uint8_t d;
     d = readTWI(0x00);
-    sprintf(wBuf, "EEPROM 0x00 : %x", d);
-    respond(wBuf);
 
-    d = readTWI(0x01);
-    sprintf(wBuf, "EEPROM 0x01 : %x", d);
-    respond(wBuf);
-
-    respond("EEPROM TEST DONE!");
+    if(d == 0x23){
+      respond("EEPROM TEST DONE!");
+    }
+    else{
+      respond("EEPROM TEST FAILED!");
+    }
   }
-  respond("hi!");
 /*
     while(1){
       if(EIFR & (1 << INTF0)){
@@ -363,21 +395,15 @@ int main(){
   uint8_t flag3 = 0;
   while(1){
     if(BLUETOOTH_LISTEN){
-    // wait until RX will be prepared!
-      
-      while(!(UCSR0A & (1<<RXC0))){
-        
-      }
+    // wait until RX will be prepared!      
+      while(!(UCSR0A & (1<<RXC0)));
       rBuf[rcnt++] = UDR0;
-      do_command(); 
+      checkNextLine(); 
     }
-    delay_ms(1000);
-    flag3 = flag3 == 0 ? 1 : 0;
-    LED2(flag3);
   }
 }
 void startTimer(uint8_t scale){
-  TCCR2B = TC2_SCALE << CS20; //  p.165
+  TCCR2B = scale << CS20; //  p.165
   isTimerDone = 0;
   // 0b000 -> No clock source
   // 0b001 -> (No Prescaling)
@@ -392,30 +418,35 @@ void stopTimer(){
   TCCR2B = 0; 
 }
 void delay_us(int time){
+  // embedded C에서 int의 크기가 16비트임을 주의!
   cnt2 = 64UL*time/1000UL;
-//  cnt2 = 48*(1000/1000);
-  startTimer(02b001);
-  while(!isTimerDone);
+  startTimer(0b001);
+  while(!isTimerDone); // ISR에서 isTimerDone 토글!
   stopTimer();
 }
 void delay_ms(int time){
   cnt2 = 64UL*time/1000UL;
-//  cnt2 = 48*(1000/1000);
-  startTimer(02b111);
+  startTimer(0b111);
   while(!isTimerDone);
   stopTimer();
 }
+// ISR 
 ISR(INT0_vect){
   if(flag == 0) flag = 1;
   else flag = 0;
   LED1(flag);
 }
-
 ISR(TIMER2_OVF_vect){
   if(cnt2 != 0){
     cnt2--;
-    if(cnt2 == 0){
-      isTimerDone = 1;
-    }
+    if(cnt2 == 0) isTimerDone = 1;
   }
+}
+uint8_t charToInt(char *buf, uint8_t _start, uint8_t _end){
+  uint8_t v = 0, d = 1, i;
+  for(i=_end;i>=_start;i--){
+    v += buf[i]*d;
+    d *= 10;    
+  }   
+  return v;
 }
