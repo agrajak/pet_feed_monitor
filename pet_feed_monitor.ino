@@ -11,39 +11,47 @@
 #define COM_GET_WEIGHT 6
 #define COM_SET_ZERO 7
 #define COM_SAVE 8
+#define COM_RESET 9
+#define COM_SAVE_WEIGHT 10
 
 // UART rBuf is waiting for ...
 #define COMMAND 0 
 #define CURRENT_TIME 1
 
+#define CHECK_SCALE_PER_MINUTE 30
 #define ADDR_DS1307 0b1101000
 #define ADDR_24LC02B 0b1010000
-
+#define SAMPLE_N 5
 #define DEBUG 1
 #define BLUETOOTH_LISTEN 1
 #define VERBOSE 1
 
-#define SCALE_FACTOR 380UL
+#define SCALE_FACTOR 38UL
 
 volatile uint8_t data;
 volatile uint8_t waitingFor;
-
 volatile char rBuf[30];
 volatile char wBuf[50];
 volatile uint8_t rcnt, wcnt;
 volatile uint8_t SLAVE_ADDR;
 volatile int cnt;
 volatile int cnt2=0;
+
 // this is for weight
-volatile uint32_t weight;
-volatile uint32_t offset;
+volatile uint32_t beforeWeight=0;
+volatile uint32_t afterWeight=0;
+volatile long int offset;
+volatile uint8_t data_length; 
 
 // boolean flags, can be optimzied by set/clear uint8_t.
-volatile uint8_t flag = 0, flag2 = 0;
+volatile uint8_t isChecking = 0, flag2 = 0, flag3 = 0;
+volatile uint8_t startFeeding = 0, finishFeeding = 0;
+// flag(INT0), flag2(TIMER0), flag3(for TIMER1)
 volatile uint8_t isTimerDone = 0;
+volatile uint8_t calcFlag;
 volatile uint8_t hasError = 0;
 volatile uint8_t DT = 0;
-
+volatile uint8_t isWeightInvalid = 0;
 //////////////////////////////// -- INIT REGISTERS --- ///////////////////////////////////
 
 // following interrupt vector names referenced from http://ee-classes.usc.edu/ee459/library/documents/avr_intr_vectors/
@@ -52,9 +60,6 @@ void initLEDs(){
   DDRB |= (1 << DDB1) | (1 << DDB2); // LED1 and LED2
   // PD3 -> INT1
   // PD4 -> SCK for HX711
-}
-void initADC(){
-
 }
 void LED1(uint8_t a){ 
   PORTB = (PORTB & ~(1<<PORTB1)) | (a<<PORTB1);
@@ -87,8 +92,8 @@ void initDelay(){
       }
     }
   */
-  // 8bit Timer/Counter2 with PWM and Asynchoronous Operation p.155
 
+  // 8bit Timer/Counter2 with PWM and Asynchoronous Operation p.155
   // Timer/Counter2 Control Register A - controls the Output Compare pin (OC2A) behavior.
 
   TCCR2A = 0; // OC0A, OC0B disabled, Wave Form Generator : Normal Mode!
@@ -105,7 +110,11 @@ void initDelay(){
   // Timer/Counter2 Interrupt Mask Register
   TIMSK2 = 1 << TOIE2; // Timer/Counter2 Overflow Interrupt Enable
 
-  // Timer/Counter2 Interrupt Flag Register (p.167)
+  // 8bit Timer/Counter1 with PWM and Asynchoronous Operation p.140
+
+  TCCR1A = 0;
+  TIMSK1 = 1 << TOIE1;
+  TCCR1B = 0b101 << CS10; // p.143
 
   SREG |= 1 << 7; // sei();
 }
@@ -146,7 +155,6 @@ void initTWI(){ // p.225
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
 /////////////////////////////// -- PROTOTYPES -- ///////////////////////////
 
 //     ## COMMUNICATION ##
@@ -154,6 +162,7 @@ void initTWI(){ // p.225
 // - UART
 void respond(char *);
 void respondByte(uint8_t);
+
 // - TWI(I2C)
 void setSlaveAddr(uint8_t);
 void senSLARW(int);
@@ -162,8 +171,11 @@ void stopTWI();
 void clearTWCR();
 uint8_t readTWI(uint16_t);
 uint8_t writeTWI(uint16_t, uint8_t);
+
 // - TWI(EEPROM)
 void loadClock(); // using EEPROM
+void loadDataLength();
+void resetEEPROM();
 // - TWI(DS1307)
 uint8_t getSecond(uint8_t);
 uint8_t getMinute(uint8_t);
@@ -179,6 +191,7 @@ void setDate(uint16_t, uint8_t);
 void setMonth(uint16_t, uint8_t);
 void setYear(uint16_t, uint8_t);
 uint8_t decimalTo8bit(uint8_t);
+
 // - Time/Counter2
 void startTimer(uint8_t);
 void stopTimer();
@@ -194,11 +207,13 @@ void togglePulse(uint8_t);
 
 void debugValue(uint8_t);
 int verifyCommand();
+void showHelp();
 void checkNextLine();
 void getCurrentTime();
 void setCurrentTime(char *);
 void saveCurrentTime();
 void initClock();
+void checkWeight();
 uint8_t charToInt(char *, uint8_t, uint8_t);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -295,17 +310,30 @@ int verifyCommand(){
       return COM_HELP;
     }
   }    
-  else if(rBuf[0]=='C' && rBuf[1]=='T'){
-    return COM_CURRENT_CLOCK;
+  else if(rBuf[0]=='C'){
+    if(rBuf[1] == 'W')
+      return COM_SAVE_WEIGHT;
+    if(rBuf[1] == 'T')
+      return COM_CURRENT_CLOCK;
   }
   else if(rBuf[0]=='I' && rBuf[1]=='T'){
     return COM_INIT_CLOCK;
   }
-  else if(rBuf[0]=='S' && rBuf[1]=='T'){
-    return COM_SET_CLOCK;
+  else if(rBuf[0]=='S'){
+    if(rBuf[1] == 'T'){
+      return COM_SET_CLOCK;
+    }
+    else if(rBuf[1] == 'A' && rBuf[2] == 'V' && rBuf[3] == 'E'){
+      return COM_SAVE;
+    }
   }
   else if(rBuf[0] == 'X'){
     return COM_GET_WEIGHT;
+  }
+  else if(rBuf[0] == 'R'){
+    if(rBuf[1] == 'E' && rBuf[2] == 'S' && rBuf[3] == 'E' && rBuf[4] == 'T'){
+      return COM_RESET;
+    }
   }
   else if(rBuf[0] == 'Z' && rBuf[1] == 'E' && rBuf[2] == 'R' && rBuf[3] == 'O'){
     return COM_SET_ZERO;
@@ -333,10 +361,6 @@ void checkNextLine(){
   if(rcnt>= 2 && rBuf[rcnt-2] == '\r' && rBuf[rcnt-1] == '\n'){ // if \n\r is recieved!
     rcnt-=2;
     rBuf[rcnt] = 0;
-    if(VERBOSE){
-      sprintf(wBuf, "[rcnt:%d,buf:%s]", rcnt, rBuf);
-      respond(wBuf);
-    }
     if(waitingFor == COMMAND){
       switch(verifyCommand()){
         case COM_HELLO:
@@ -362,16 +386,37 @@ void checkNextLine(){
         case COM_GET_WEIGHT:
           LED3(1);
           v = getWeight();
-          sprintf(wBuf, "weight is %ld(offset:%ld)", v, offset);
-          respond(wBuf);
-          respond("Send Signal Done!");
+          if(!isWeightInvalid){
+            sprintf(wBuf, "weight is %ld.%d(offset:%ld)", v/10, v%10, offset);
+            respond(wBuf);
+          }
+          else {
+            respond("You got invalid weight value, you should re-zero scale");
+          }
           LED3(0);
           break;
         case COM_SET_ZERO:
+          LED3(1);
           setZero();
+          LED3(0);
+          break;
+        case COM_SAVE_WEIGHT:
+          checkWeight();
+          break;
+        case COM_HELP:
+          showHelp();
           break;
         case COM_SAVE:
+          LED3(1);
           saveCurrentTime();
+          respond("save is done!");
+          LED3(0);
+          break;
+        case COM_RESET:
+          LED3(1);
+          resetEEPROM();
+          LED3(0);
+          break;
         default:
           respond("Undeclared Command!");
           break;
@@ -392,6 +437,11 @@ void initClock(){
   respond("Start Init Clock!");
   setSlaveAddr(ADDR_DS1307);
   writeTWI(0x00, 0x00);
+  writeTWI(0x01, 0x00);
+  writeTWI(0x02, 0x00);
+  writeTWI(0x04, 0x00);
+  writeTWI(0x05, 0x00);
+  writeTWI(0x06, 0x00);
   respond("Init Clock Done!");
   uint8_t d = readTWI(0x00);
   sprintf(wBuf, "0x00 : %x", d);
@@ -427,6 +477,9 @@ void getCurrentTime(){
   D = getDate(readTWI(0x04));
   M = getMonth(readTWI(0x05));
   Y = getYear(readTWI(0x06));
+
+  sprintf(wBuf, "Current Time : 20%d:%d:%d-%d:%d:%d", Y, M, D, h, m, s);
+  respond(wBuf);
 }
 // DS1307 -> EEPROM
 void saveCurrentTime(){
@@ -438,6 +491,8 @@ void saveCurrentTime(){
   D = readTWI(0x04);
   M = readTWI(0x05);
   Y = readTWI(0x06);
+
+  sprintf(wBuf, "Time in DS1307 : 20%d:%d:%d-%d:%d:%d", Y, M, D, h, m, s);
 
   setSlaveAddr(ADDR_24LC02B);
   writeTWI(0x004, s);
@@ -467,23 +522,58 @@ void loadCurrentTime(){
   writeTWI(0x06, Y);
 }
 int main(){
+  // init registers
   initLEDs();
   initUART();
   initTWI();
   initDelay();    
 
   // load stuff
-
   loadCurrentTime();
   loadZero();
+  loadDataLength();
 
-  uint8_t flag3 = 0;
+  // turn led1 on!
   LED1(1);
-  while(1){
 
+  respond("============");
+  respond("  Welcome!  ");
+  respond("============");
+  while(1){
     if(BLUETOOTH_LISTEN){
     // wait until RX will be prepared!      
-      while(!(UCSR0A & (1<<RXC0)));
+      while(!(UCSR0A & (1<<RXC0))){
+        // 버튼이 제일 처음 빨간색으로 변할 떄
+        if(startFeeding == 1 && finishFeeding == 0){
+          isChecking = 1;
+          // 이미 beforeWeight를 기록 중이었다면 EEPROM에 저장
+          if(beforeWeight != 0){
+            checkWeight();
+          }
+          finishFeeding = 1; 
+          isChecking = 0;
+          LED3(1);
+        }
+        // 버튼이 꺼질 때
+        else if(startFeeding == 0 && finishFeeding == 1){
+          isChecking = 1;
+          // beforeWeight 기록 초기화
+          afterWeight = 0;
+          beforeWeight = getWeight();
+
+          startFeeding = finishFeeding = 0;
+          isChecking = 0;
+          LED3(0);
+        }
+        else if(flag3){ // 5분마다 ACTIVATED 된다.
+          LED2(1);
+          // TODO : 날짜 체크하기
+          if(startFeeding == 0 && finishFeeding == 0)
+            checkWeight();
+          flag3 = 0;
+          LED2(0);
+        }
+      }
       rBuf[rcnt++] = UDR0;
       checkNextLine(); 
     }
@@ -520,10 +610,27 @@ void delay_ms(int time){
 }
 // ISR
 ISR(INT0_vect){
-  if(flag == 0) flag = 1;
-  else flag = 0;
-  LED1(flag);
+  if(!isChecking){
+    if(startFeeding == 0 && finishFeeding == 0){
+      startFeeding = 1;
+      finishFeeding = 0;
+    }
+    else if(startFeeding == 1 && finishFeeding == 1){
+      startFeeding = 0;
+      finishFeeding = 1;
+    }
+  }
 }
+// checking every minutes;
+ISR(TIMER1_OVF_vect){
+  cnt++;
+  if(cnt == CHECK_SCALE_PER_MINUTE * 15){
+    flag3 = 1;
+    LED2(1);
+    cnt = 0;
+  }
+}
+// implementation for delay_ms, and delay_us;
 ISR(TIMER2_OVF_vect){
   if(cnt2 != 0){
     cnt2--;
@@ -547,50 +654,72 @@ uint8_t charToInt(char *buf, uint8_t _start, uint8_t _end){
 }
 
 uint32_t getWeight(){
+  isWeightInvalid = false;
   uint32_t v = readWeight();
-  if(v+offset > 0){
+  if((long)v + offset > 0){
     return (v+offset)/SCALE_FACTOR;
   }
+  else if((long)v + offset > -3*SCALE_FACTOR){ // -0.3g 까지는 보정해주자.
+    return 0;
+  }
+  sprintf(wBuf, "v is %ld(%ld), offset is %ld(%ld), v+offset is %ld", v, (long)v, offset, (long)offset, (long)v+offset);
+  respond(wBuf);
+  respond("Invalid value detected. \n Re-zero should be done!");
+  isWeightInvalid = true;
   return 0;
 }
 uint32_t readWeight(){
   uint8_t i, s; 
-  uint32_t v=0, sum =0;
+  uint32_t v=0;
   uint8_t highPeriod = 40, data[3]={0}, pos=7;
+  long _min=0, _max=0, _sum=0;
+
   // HX711 datasheet p.5
 
   // Pulse 25번 -> GAIN 128
   // Pulse 27번 -> GAIN 64
   // MSB --------------------- LSB
-  
-  for(i=0;i<8;i++){
-    togglePulse(1); delay_us(10);
-    data[2] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
-    delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
-  }
-  for(i=0;i<8;i++){
-    togglePulse(1); delay_us(10);
-    data[1] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
-    delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
-  }
-  for(i=0;i<8;i++){
-    togglePulse(1); delay_us(10);
-    data[0] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
-    delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
-  }
-  for(i=0;i<1;i++){
-    togglePulse(1); delay_us(10); delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
-  }
+  for(s=0;s<SAMPLE_N;s++){
+    data[2] = data[1] = data[0] = 0;
+    delay_ms(100);
+    for(i=0;i<8;i++){
+      togglePulse(1); delay_us(10);
+      data[2] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
+      delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
+    }
 
-  v = ( static_cast<unsigned long>((data[2] & 0x80) ? 0xFF : 0x00) << 24
-			| static_cast<unsigned long>(data[2]) << 16
-			| static_cast<unsigned long>(data[1]) << 8
-			| static_cast<unsigned long>(data[0]) );
-      
-//  sprintf(wBuf, "%x|%x|%x, v = %ld", data[2], data[1], data[0], v);
-//  respond(wBuf);
-  
-  return v;
+    for(i=0;i<8;i++){
+      togglePulse(1); delay_us(10);
+      data[1] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
+      delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
+    }
+
+    for(i=0;i<8;i++){
+      togglePulse(1); delay_us(10);
+      data[0] += ((PIND & (1<<PORTD3)) >> PORTD3) << (7-i);
+      delay_us(10); togglePulse(0); delay_us(10); delay_us(10);
+    }
+
+    for(i=0;i<1;i++){
+      togglePulse(1); delay_us(10); delay_us(10); 
+      togglePulse(0); delay_us(10); delay_us(10);
+    }
+    v = ( static_cast<unsigned long>((data[2] & 0x80) ? 0xFF : 0x00) << 24
+        | static_cast<unsigned long>(data[2]) << 16
+        | static_cast<unsigned long>(data[1]) << 8
+        | static_cast<unsigned long>(data[0]) );
+    _sum += v;
+    if(s==0){
+      _min = v;
+      _max = v;
+    }
+    else {
+      if(_min > v) _min = v;
+      else if(_max < v) _max = v;
+    }
+
+  }
+  return (_sum-_min-_max)/(SAMPLE_N-2);
 }
 uint8_t getSecond(uint8_t addr){
   return ((addr & 0x70)>>4) * 10 + (addr & 0x0F);
@@ -610,14 +739,12 @@ uint8_t getMonth(uint8_t addr){
 uint8_t getYear(uint8_t addr){
   return ((addr & 0xF0)>>4) * 10 + (addr & 0x0F);
 }
-
 uint8_t decimalTo8bit(uint8_t v){
   return ((v/10)<<4) | (v%10);
 }
 
 void setZero(){
   offset = readWeight();
-
   offset = -offset;
 
   uint8_t data[3] = {0};
@@ -628,19 +755,14 @@ void setZero(){
   }
   setSlaveAddr(ADDR_24LC02B);
 
-
   data[2] = (offset & 0xFF0000) >> 16;
   data[1] = (offset & 0x00FF00) >> 8;
   data[0] = (offset & 0x0000FF);
   
-  sprintf(wBuf, "offsets %x|%x|%x", (offset & 0xF00), (offset & 0x0F0), (offset & 0x00F));
-  respond(wBuf);
-  sprintf(wBuf, "datas %x|%x|%x", data[2], data[1], data[0]);
-  respond(wBuf);
-
   writeTWI(0x002, data[2]);
   writeTWI(0x001, data[1]);
   writeTWI(0x000, data[0]);
+  
   if(VERBOSE) respond("write to EEPROM Complete!");
 }
 void loadZero(){
@@ -650,16 +772,76 @@ void loadZero(){
   data[2] = readTWI(0x002);
   data[1] = readTWI(0x001);
   data[0] = readTWI(0x000);
-  if(VERBOSE){
-    sprintf(wBuf, "data! %x|%x|%x", data[2], data[1], data[0]);
-    respond(wBuf);
-  }
   offset = (data[2] << 16) | (data[1] << 8) | (data[0]);
   if(VERBOSE){
     sprintf(wBuf, "Zeroing Offset loaded. (%ld)", offset);
     respond(wBuf);
   }
 }
+void showHelp(){
+  respond("COMMANDS: ");
+  respond("========");
+  respond("HI: say hello to system!");
+  respond("CT: show current time in system");
+  respond("IT: init Clocks ");
+  respond("ST: adjust system time");
+  respond("ZERO: do zero for scale");
+  respond("X: check scale");
+  respond("RESET: reset EEPROM");
+  respond("CW: calc scale diff");
+  respond("========");
+}
+void checkWeight(){
+  respond("checkWeight start!");
+  long int diff=0;
+  saveCurrentTime();
+
+  if(beforeWeight == 0){ // 처음 체크하는 무게일때
+    beforeWeight = getWeight();
+    respond("diff is zero");
+    return;
+  }
+  else {
+    afterWeight = getWeight();
+    sprintf(wBuf, "beforeWeight : %ld", beforeWeight);
+    sprintf(wBuf, "afterWeight : %ld", afterWeight);
+    respond(wBuf);
+    diff = afterWeight - beforeWeight;
+    sprintf(wBuf, "diff is %ld!", diff);
+    respond(wBuf);
+
+    beforeWeight = afterWeight;
+    sprintf(wBuf, "beforeWeight is now : %ld", beforeWeight);
+    respond(wBuf);
+  }
+  // 무게 측정값이 - 이거나 무게가 더 증가했을 때
+  if(isWeightInvalid || diff < 0){
+    respond("You got invalid weight data. plz zero again");
+  }
+  else if(diff > 10){
+    sprintf(wBuf, "diff is %ld", diff);
+    respond(wBuf);
+    // TODO : EEPROM에 기록하기!
+  }
+  else {
+    respond("Diff is less than 1g. so we'll ignore it!");
+  }
+}
+void loadDataLength(){
+  setSlaveAddr(ADDR_24LC02B);
+  data_length = readTWI(0x003);
+  if(VERBOSE){
+    sprintf(wBuf, "Total %d datas exist in EEPROM!", data_length);
+    respond(wBuf);
+  }
+}
+void resetEEPROM(){
+  setSlaveAddr(ADDR_24LC02B);
+  int i;
+  for(i=0;i<0x00F;i++) writeTWI(i, 0);
+  respond("Reset EEPROM done!");
+}
+// ------------------------------------------------------ 
 // EEPROM 배치도 2048 byte => 2^11
 // ------------------------------------------------------ 
 // [3bit] 0x000 ~ 0x002: offset 24bit for 영점조절
@@ -670,7 +852,6 @@ void loadZero(){
 
 // [6bit] 0x009+n*7 ~ 0x00F+n*7: n번째 정보의 날짜(Y-M-D:h-m-s)
 // [1bit] 0x010+n*7: n번째 정보의 사료량 (최대 256g)
-
 
 // 캘리브레이션
 // 100원 => 5.42g, 50원 => 4.16g
