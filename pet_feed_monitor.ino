@@ -22,7 +22,7 @@
 #define COMMAND 0 
 #define CURRENT_TIME 1
 
-#define CHECK_SCALE_PER_MINUTE 60
+#define CHECK_SCALE_PER_MINUTE 1
 #define ADDR_DS1307 0b1101000
 #define ADDR_24LC02B 0b1010000
 #define SAMPLE_N 5
@@ -222,7 +222,7 @@ void clearDiff();
 long int getDiff();
 uint8_t charToInt(char *, uint8_t, uint8_t);
 void showDatas(long int time);
-//long int dateToTimeStamp(uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t);
+long int dateToTimeStamp(uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -374,7 +374,7 @@ void respondByte(uint8_t value){
 }
 void checkNextLine(){
   uint8_t c;
-  uint16_t v;
+  uint32_t v;
   // if next line detected
   if(rcnt>= 2 && rBuf[rcnt-2] == '\r' && rBuf[rcnt-1] == '\n'){ // if \n\r is recieved!
     rcnt-=2;
@@ -422,20 +422,23 @@ void checkNextLine(){
         LED3(0);
       }
       if(c==COM_SAVE_WEIGHT){
+        LED3(1);
         clearDiff();
+        LED3(0);
       }
       if(c==COM_HELP){
         showHelp();
       }
       if(c==COM_GET_DIFF){
+        LED3(1);
         long int diff = getDiff();
         sprintf(wBuf, "difference is %ld.%dg", diff/10, diff%10);
         respond(wBuf);
+        LED3(0);
       }
       if(c==COM_SAVE){
         LED3(1);
         saveCurrentTime();
-        respond("Save is done!");
         LED3(0);
       }
       if(c==COM_SHOW_ALL){
@@ -455,7 +458,7 @@ void checkNextLine(){
       }
     }
     else if(waitingFor == CURRENT_TIME){
-        if(rcnt != 16) respond("Invalid Format!, 주어진 포맷대로 입력하십시오.");
+        if(rcnt != 16) respond("Invalid Format!");
         else if(rBuf[0] != '2' || rBuf[1] != '0') respond("YYYY should be 20xx!");
         else {
           setCurrentTime(rBuf);
@@ -536,7 +539,7 @@ void saveCurrentTime(){
   writeTWI(0x007, D);
   writeTWI(0x008, M);
   writeTWI(0x009, Y);
-  respond("Save is Done!");
+//  respond("Save is Done!");
 }
 // EEPROM -> DS1307
 void loadCurrentTime(){
@@ -548,7 +551,7 @@ void loadCurrentTime(){
   D = readTWI(0x007);
   M = readTWI(0x008);
   Y = readTWI(0x009);
-
+  
   setSlaveAddr(ADDR_DS1307);
   writeTWI(0x00, s);
   writeTWI(0x01, m);
@@ -562,17 +565,41 @@ int main(){
   initLEDs();
   initUART();
   initTWI();
-  initDelay();    
+  initDelay(); 
+  uint8_t Y, M, D, h, m, s;   
+  respond("--------------------------------------------");
 
   // load stuff
   loadCurrentTime();
   loadZero();
   loadDataLength();
 
+  s = getSecond(readTWI(0x004));
+  m = getMinute(readTWI(0x005));
+  h = getHour(readTWI(0x006));
+  D = getDate(readTWI(0x007));
+  M = getMonth(readTWI(0x008));
+  Y = getYear(readTWI(0x009));
+
+  sprintf(wBuf, "현재 시간: 20%d:%d:%d-%d시%d분%d초", Y, M, D
+  , h, m, s);
+  respond(wBuf);
+
+  Y = getYear(readTWI(0x00A));
+  M = getMonth(readTWI(0x00B));
+  D = getDate(readTWI(0x00C));
+  h = getHour(readTWI(0x00D));
+  m = getMinute(readTWI(0x00E));
+  s = getSecond(readTWI(0x00F));
+  sprintf(wBuf, "마지막에 사료량을 측정한 시간: 20%d:%d:%d-%d시%d분%d초", Y, M, D
+  , h, m, s);
+  respond(wBuf);
+
+
   // turn led1 on!
-  respond("=================");
+  respond("=============================================");
   respond("  Welcome. type HELP to see commands!  ");
-  respond("-----------------");
+  respond("--------------------------------------------");
   while(1){
     if(BLUETOOTH_LISTEN){
     // wait until RX will be prepared!      
@@ -767,7 +794,9 @@ uint32_t readWeight(){
     }
 
   }
-  return (_sum-_min-_max)/(SAMPLE_N-2);
+  _sum -= (_min + _max);
+  _sum /= (SAMPLE_N - 2);
+  return _sum;
 }
 uint8_t getSecond(uint8_t addr){
   return ((addr & 0x70)>>4) * 10 + (addr & 0x0F);
@@ -829,7 +858,7 @@ void loadZero(){
 void showHelp(){
   respond("< 명령어들 >");
   respond("==== 일반 ====");
-  respond("HI: say hello to system!");
+  /*respond("HI: say hello to system!");
   respond("CT: 현재 시스템 시간을 보여줍니다.");
   respond("IT: 시계를 0:0:0-0:0:0으로 초기화합니다. ");
   respond("ST: 시스템 시간을 수동으로 설정합니다.");
@@ -842,6 +871,7 @@ void showHelp(){
   respond("S_6HOUR: 최근 6시간동안의 사료 소비량을 출력합니다.");
   respond("S_1DAY: 최근 하루동안의 사료소비량을 출력합니다.");
   respond("S_ALL: 저장되어있는 모든 소비 데이터를 출력합니다.");
+  */
   respond("==============");
 }
 void clearDiff(){
@@ -882,19 +912,20 @@ void clearDiff(){
     writeTWI(0x00D + n*8, m);
     writeTWI(0x00E + n*8, s);
 
-    writeTWI(0x00F + n*8, v>>8);
-    writeTWI(0x010 + n*8, v & 0x0F);
+    writeTWI(0x00F + n*8, (v & 0xFF00)>>8);
+    writeTWI(0x010 + n*8, v & 0x00FF);
 
-    writeTWI(0x004 + n*8, Y);
-    writeTWI(0x005 + n*8, M);
-    writeTWI(0x006 + n*8, D);
-    writeTWI(0x007 + n*8, h);
-    writeTWI(0x008 + n*8, m);
-    writeTWI(0x009 + n*8, s);
+    writeTWI(0x00A, Y);
+    writeTWI(0x00B, M);
+    writeTWI(0x00C, D);
+    writeTWI(0x00D, h);
+    writeTWI(0x00E, m);
+    writeTWI(0x00F, s);
 
     writeTWI(0x003, n);
 
     respond("EEPROM에 해당 정보 쓰기 완료!");
+    data_length ++;
   }
   else {
     respond("무게 차이가 0.5g이내이므로 무시함.");
@@ -909,7 +940,7 @@ long int getDiff(){
     // 처음 체크하는 무게일때 이제 측정 시작을 알리는 LED 온!
     LED1(1);
   }
-  if(-5 < diff && diff < 5){
+  if(-10 < diff && diff < 10){
     return 0;
   }
   return diff;
@@ -927,8 +958,10 @@ void resetEEPROM(){
   uint8_t i;
   for(i=0;i<0x00F;i++) writeTWI(i, 0);
   respond("Reset EEPROM done!");
+  initClock();
+  data_length = 0;
 }
-/*
+
 long int dateToTimeStamp(uint8_t Y, uint8_t M, uint8_t D, uint8_t h, uint8_t m , uint8_t s){
   long int v=0;
   v+=s; // 60초 => 1분
@@ -939,31 +972,26 @@ long int dateToTimeStamp(uint8_t Y, uint8_t M, uint8_t D, uint8_t h, uint8_t m ,
   v+=Y*24*60*60*days[M]*12;
   return v;
 }
-*/
+
 void showDatas(long int time){
-  /*
+  
   uint8_t i;
-  uint8_t Y, M, D, h, m, s;
+  uint8_t Y, M, D, h, m, s, v1, v2;
   uint16_t v=0, sum=0;
   long int now, t;
   
   setSlaveAddr(ADDR_DS1307);
-
   s = getSecond(readTWI(0x00));
   m = getMinute(readTWI(0x01));
   h = getHour(readTWI(0x02));
   D = getDate(readTWI(0x04));
   M = getMonth(readTWI(0x05));
   Y = getYear(readTWI(0x06));
-
   now = dateToTimeStamp(Y, M, D, h, m, s);
-
   sprintf(wBuf, "총 %d개의 데이터가 존재합니다!", data_length);
   respond(wBuf);
-  respond("데이터 보여주기 시작!");
   setSlaveAddr(ADDR_24LC02B);
   for(i=1;i<=data_length;i++){
-
     Y = getYear(readTWI(0x009 + i*8));
     M = getMonth(readTWI(0x00A + i*8));
     D = getDate(readTWI(0x00B + i*8));
@@ -974,7 +1002,9 @@ void showDatas(long int time){
     t = dateToTimeStamp(Y, M, D, h, m, s);
     sprintf(wBuf, "now: %ld, t: %ld", now, t);
     respond(wBuf);
-    v = (readTWI(0x00F + i*8) << 8) | readTWI(0x010 + i*8);
+    v1 = readTWI(0x00F + i*8) << 8;
+    v2 = readTWI(0x010 + i*8);
+    v = v1 | v2;
     sprintf(wBuf, "%d번째: 20%d:%d:%d-%d시%d분%d초 -> %d.%dg소비 (%ld)", i, Y, M, D
     , h, m, s, v/10, v%10, now - t);
     respond(wBuf);
@@ -982,7 +1012,7 @@ void showDatas(long int time){
   }
   sprintf(wBuf, "총 사료 소비량: %d.%dg", sum/10, sum%10);
   respond(wBuf);
-  */
+  
   
 }
 // ------------------------------------------------------ 
@@ -992,7 +1022,7 @@ void showDatas(long int time){
 
 // [1bit] 0x003: 몇개의 정보가 저장되어있는가?
 // [6bit] 0x004 ~ 0x009: 제일 최근에 저장된 날짜 (장비가 켜질때 해당 시간을 불러온다.)
-// [6bit] 0x0010 ~ 0x00F: 제일 마지막에 사료량을 기록한 날짜
+// [6bit] 0x00A ~ 0x00F: 제일 마지막에 사료량을 기록한 날짜
 
 // [6bit] 0x009+n*8 ~ 0x00E(14)+n*8: n번째 정보의 날짜(Y-M-D:h-m-s)
 // [2bit] 0x00F(15)+n*8 ~ 0x010(16)+n*8: n번째 정보의 사료량 (최대 65536g)
