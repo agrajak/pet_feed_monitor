@@ -213,7 +213,8 @@ void getCurrentTime();
 void setCurrentTime(char *);
 void saveCurrentTime();
 void initClock();
-void checkWeight();
+void clearDiff();
+long int getDiff();
 uint8_t charToInt(char *, uint8_t, uint8_t);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -401,7 +402,7 @@ void checkNextLine(){
           LED3(0);
           break;
         case COM_SAVE_WEIGHT:
-          checkWeight();
+          clearDiff();
           break;
         case COM_HELP:
           showHelp();
@@ -534,8 +535,6 @@ int main(){
   loadDataLength();
 
   // turn led1 on!
-  LED1(1);
-
   respond("============");
   respond("  Welcome!  ");
   respond("============");
@@ -545,17 +544,20 @@ int main(){
       while(!(UCSR0A & (1<<RXC0))){
         // 버튼이 제일 처음 빨간색으로 변할 떄
         if(startFeeding == 1 && finishFeeding == 0){
+          LED3(1);
           isChecking = 1;
           // 이미 beforeWeight를 기록 중이었다면 EEPROM에 저장
           if(beforeWeight != 0){
-            checkWeight();
+            clearDiff();
           }
           finishFeeding = 1; 
           isChecking = 0;
-          LED3(1);
+          LED2(1);
+          LED3(0);
         }
         // 버튼이 꺼질 때
         else if(startFeeding == 0 && finishFeeding == 1){
+          LED3(1);
           isChecking = 1;
           // beforeWeight 기록 초기화
           afterWeight = 0;
@@ -564,14 +566,17 @@ int main(){
           startFeeding = finishFeeding = 0;
           isChecking = 0;
           LED3(0);
+          LED2(0);
         }
         else if(flag3){ // 5분마다 ACTIVATED 된다.
+          LED3(1);
           LED2(1);
           // TODO : 날짜 체크하기
           if(startFeeding == 0 && finishFeeding == 0)
-            checkWeight();
+            clearDiff();
           flag3 = 0;
           LED2(0);
+          LED3(0);
         }
       }
       rBuf[rcnt++] = UDR0;
@@ -673,7 +678,6 @@ uint32_t readWeight(){
   uint32_t v=0;
   uint8_t highPeriod = 40, data[3]={0}, pos=7;
   long _min=0, _max=0, _sum=0;
-
   // HX711 datasheet p.5
 
   // Pulse 25번 -> GAIN 128
@@ -791,32 +795,27 @@ void showHelp(){
   respond("CW: calc scale diff");
   respond("========");
 }
-void checkWeight(){
-  respond("checkWeight start!");
+void clearDiff(){
+  respond("clearDiff start!");
   long int diff=0;
   saveCurrentTime();
 
   if(beforeWeight == 0){ // 처음 체크하는 무게일때
     beforeWeight = getWeight();
-    respond("diff is zero");
+    LED1(1);
     return;
   }
   else {
     afterWeight = getWeight();
-    sprintf(wBuf, "beforeWeight : %ld", beforeWeight);
-    sprintf(wBuf, "afterWeight : %ld", afterWeight);
-    respond(wBuf);
-    diff = afterWeight - beforeWeight;
-    sprintf(wBuf, "diff is %ld!", diff);
-    respond(wBuf);
-
+    diff = beforeWeight - afterWeight;
     beforeWeight = afterWeight;
-    sprintf(wBuf, "beforeWeight is now : %ld", beforeWeight);
-    respond(wBuf);
   }
   // 무게 측정값이 - 이거나 무게가 더 증가했을 때
-  if(isWeightInvalid || diff < 0){
+  if(isWeightInvalid){
     respond("You got invalid weight data. plz zero again");
+  }
+  else if(diff < 0){
+    respond("You should have pushed button when you feed!");
   }
   else if(diff > 10){
     sprintf(wBuf, "diff is %ld", diff);
@@ -826,6 +825,13 @@ void checkWeight(){
   else {
     respond("Diff is less than 1g. so we'll ignore it!");
   }
+}
+long int getDiff(){
+  long int diff = 0;
+  if(beforeWeight != 0){ // 처음 체크하는 무게일때
+    diff = beforeWeight - getWeight();
+  }
+  return diff;
 }
 void loadDataLength(){
   setSlaveAddr(ADDR_24LC02B);
@@ -841,6 +847,7 @@ void resetEEPROM(){
   for(i=0;i<0x00F;i++) writeTWI(i, 0);
   respond("Reset EEPROM done!");
 }
+
 // ------------------------------------------------------ 
 // EEPROM 배치도 2048 byte => 2^11
 // ------------------------------------------------------ 
@@ -850,8 +857,8 @@ void resetEEPROM(){
 // [6bit] 0x004 ~ 0x009: 제일 최근에 저장된 날짜 (장비가 켜질때 해당 시간을 불러온다.)
 // [6bit] 0x0010 ~ 0x00F: 제일 마지막에 사료량을 기록한 날짜
 
-// [6bit] 0x009+n*7 ~ 0x00F+n*7: n번째 정보의 날짜(Y-M-D:h-m-s)
-// [1bit] 0x010+n*7: n번째 정보의 사료량 (최대 256g)
+// [6bit] 0x009+n*8 ~ 0x00F+n*8: n번째 정보의 날짜(Y-M-D:h-m-s)
+// [2bit] 0x010+n*8 ~ 0x011+n*8: n번째 정보의 사료량 (최대 65536g)
 
 // 캘리브레이션
 // 100원 => 5.42g, 50원 => 4.16g
