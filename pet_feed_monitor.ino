@@ -13,6 +13,7 @@
 #define COM_SAVE 8
 #define COM_RESET 9
 #define COM_SAVE_WEIGHT 10
+#define COM_GET_DIFF 11
 
 // UART rBuf is waiting for ...
 #define COMMAND 0 
@@ -339,6 +340,9 @@ int verifyCommand(){
   else if(rBuf[0] == 'Z' && rBuf[1] == 'E' && rBuf[2] == 'R' && rBuf[3] == 'O'){
     return COM_SET_ZERO;
   }
+  else if(rBuf[0] == 'G' && rBuf[1] == 'D'){
+    return COM_GET_DIFF;
+  }
   return COM_UNKNOWN;
 }
 void respond(char *buf){
@@ -406,6 +410,11 @@ void checkNextLine(){
           break;
         case COM_HELP:
           showHelp();
+          break;
+        case COM_GET_DIFF:
+          long int diff = getDiff();
+          sprintf(wBuf, "difference is %ld.%dg", diff/10, diff%10);
+          respond(wBuf);
           break;
         case COM_SAVE:
           LED3(1);
@@ -570,12 +579,10 @@ int main(){
         }
         else if(flag3){ // 5분마다 ACTIVATED 된다.
           LED3(1);
-          LED2(1);
           // TODO : 날짜 체크하기
           if(startFeeding == 0 && finishFeeding == 0)
             clearDiff();
           flag3 = 0;
-          LED2(0);
           LED3(0);
         }
       }
@@ -797,39 +804,35 @@ void showHelp(){
 }
 void clearDiff(){
   respond("clearDiff start!");
-  long int diff=0;
   saveCurrentTime();
+  long int diff=getDiff();
+  // refresh beforeWeight!
 
-  if(beforeWeight == 0){ // 처음 체크하는 무게일때
-    beforeWeight = getWeight();
-    LED1(1);
-    return;
-  }
-  else {
-    afterWeight = getWeight();
-    diff = beforeWeight - afterWeight;
-    beforeWeight = afterWeight;
-  }
-  // 무게 측정값이 - 이거나 무게가 더 증가했을 때
+  beforeWeight = getWeight();
+
   if(isWeightInvalid){
     respond("You got invalid weight data. plz zero again");
   }
   else if(diff < 0){
     respond("You should have pushed button when you feed!");
   }
-  else if(diff > 10){
+  else{
     sprintf(wBuf, "diff is %ld", diff);
     respond(wBuf);
     // TODO : EEPROM에 기록하기!
   }
-  else {
-    respond("Diff is less than 1g. so we'll ignore it!");
-  }
 }
 long int getDiff(){
   long int diff = 0;
-  if(beforeWeight != 0){ // 처음 체크하는 무게일때
+  if(beforeWeight != 0){
     diff = beforeWeight - getWeight();
+  }
+  else {
+    // 처음 체크하는 무게일때 이제 측정 시작을 알리는 LED 온!
+    LED1(1);
+  }
+  if(-5 < diff && diff < 5){
+    return 0;
   }
   return diff;
 }
@@ -857,8 +860,8 @@ void resetEEPROM(){
 // [6bit] 0x004 ~ 0x009: 제일 최근에 저장된 날짜 (장비가 켜질때 해당 시간을 불러온다.)
 // [6bit] 0x0010 ~ 0x00F: 제일 마지막에 사료량을 기록한 날짜
 
-// [6bit] 0x009+n*8 ~ 0x00F+n*8: n번째 정보의 날짜(Y-M-D:h-m-s)
-// [2bit] 0x010+n*8 ~ 0x011+n*8: n번째 정보의 사료량 (최대 65536g)
+// [6bit] 0x009+n*8 ~ 0x00E(14)+n*8: n번째 정보의 날짜(Y-M-D:h-m-s)
+// [2bit] 0x00F(15)+n*8 ~ 0x010(16)+n*8: n번째 정보의 사료량 (최대 65536g)
 
 // 캘리브레이션
 // 100원 => 5.42g, 50원 => 4.16g
