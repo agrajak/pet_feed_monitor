@@ -9,6 +9,8 @@
 #define COM_CURRENT_CLOCK 4
 #define COM_HELP 5
 #define COM_GET_WEIGHT 6
+#define COM_SET_ZERO 7
+#define COM_SAVE 8
 
 // UART rBuf is waiting for ...
 #define COMMAND 0 
@@ -21,6 +23,8 @@
 #define BLUETOOTH_LISTEN 1
 #define VERBOSE 1
 
+#define SCALE_FACTOR 380UL
+
 volatile uint8_t data;
 volatile uint8_t waitingFor;
 
@@ -30,6 +34,10 @@ volatile uint8_t rcnt, wcnt;
 volatile uint8_t SLAVE_ADDR;
 volatile int cnt;
 volatile int cnt2=0;
+// this is for weight
+volatile uint32_t weight;
+volatile uint32_t offset;
+
 // boolean flags, can be optimzied by set/clear uint8_t.
 volatile uint8_t flag = 0, flag2 = 0;
 volatile uint8_t isTimerDone = 0;
@@ -152,8 +160,8 @@ void senSLARW(int);
 void startTWI();
 void stopTWI();
 void clearTWCR();
-uint8_t readTWI(uint8_t);
-uint8_t writeTWI(uint8_t, uint8_t);
+uint8_t readTWI(uint16_t);
+uint8_t writeTWI(uint16_t, uint8_t);
 // - TWI(EEPROM)
 void loadClock(); // using EEPROM
 // - TWI(DS1307)
@@ -177,7 +185,10 @@ void stopTimer();
 void delay_ms(int);
 void delay_us(int);
 // - HX711 (24bit ADC)
+uint32_t readWeight();
 uint32_t getWeight();
+void setZero();
+
 void togglePulse(uint8_t);
 //     ## Miscellaneous ##
 
@@ -186,6 +197,7 @@ int verifyCommand();
 void checkNextLine();
 void getCurrentTime();
 void setCurrentTime(char *);
+void saveCurrentTime();
 void initClock();
 uint8_t charToInt(char *, uint8_t, uint8_t);
 
@@ -220,13 +232,13 @@ void stopTWI(){
   TWCR = (1<<TWINT) | (1<<TWSTO) | (1<<TWEN); 
   while(!(TWCR & (1<<TWSTO)));
 
-  delay_ms(50);
+  delay_ms(100);
 }
 void clearTWCR(){
   TWCR = (1<<TWINT) | (1<<TWEN);
   while (!(TWCR & (1<<TWINT)));
 }
-uint8_t readTWI(uint8_t addr){
+uint8_t readTWI(uint16_t addr){
   // Master Reciever TWSR 코드 정리는 230페이지에 있음!
 
   uint8_t data;
@@ -257,7 +269,7 @@ uint8_t readTWI(uint8_t addr){
   
   return data;
 }
-uint8_t writeTWI(uint8_t addr, uint8_t data){
+uint8_t writeTWI(uint16_t addr, uint8_t data){
   // Master Trasmitter TWSR 정리는 227페이지에 있음!
   startTWI();  // ====> START
   if((TWSR & 0xF8) != 0x08) { respondByte(TWSR & 0xF8); return (TWSR & 0xF8); }
@@ -294,6 +306,9 @@ int verifyCommand(){
   }
   else if(rBuf[0] == 'X'){
     return COM_GET_WEIGHT;
+  }
+  else if(rBuf[0] == 'Z' && rBuf[1] == 'E' && rBuf[2] == 'R' && rBuf[3] == 'O'){
+    return COM_SET_ZERO;
   }
   return COM_UNKNOWN;
 }
@@ -347,11 +362,16 @@ void checkNextLine(){
         case COM_GET_WEIGHT:
           LED3(1);
           v = getWeight();
-          sprintf(wBuf, "weight is %ld, %u(%d)", v, v, v);
+          sprintf(wBuf, "weight is %ld(offset:%ld)", v, offset);
           respond(wBuf);
           respond("Send Signal Done!");
           LED3(0);
           break;
+        case COM_SET_ZERO:
+          setZero();
+          break;
+        case COM_SAVE:
+          saveCurrentTime();
         default:
           respond("Undeclared Command!");
           break;
@@ -400,7 +420,6 @@ void setCurrentTime(char *buf){
 }
 void getCurrentTime(){
   uint8_t s, m, h, D, M, Y, d, ct;
-
   setSlaveAddr(ADDR_DS1307);
   s = getSecond(readTWI(0x00));
   m = getMinute(readTWI(0x01));
@@ -408,7 +427,44 @@ void getCurrentTime(){
   D = getDate(readTWI(0x04));
   M = getMonth(readTWI(0x05));
   Y = getYear(readTWI(0x06));
+}
+// DS1307 -> EEPROM
+void saveCurrentTime(){
+  uint8_t s, m, h, D, M, Y;
+  setSlaveAddr(ADDR_DS1307);
+  s = readTWI(0x00);
+  m = readTWI(0x01);
+  h = readTWI(0x02);
+  D = readTWI(0x04);
+  M = readTWI(0x05);
+  Y = readTWI(0x06);
 
+  setSlaveAddr(ADDR_24LC02B);
+  writeTWI(0x004, s);
+  writeTWI(0x005, m);
+  writeTWI(0x006, h);
+  writeTWI(0x007, D);
+  writeTWI(0x008, M);
+  writeTWI(0x009, Y);
+}
+// EEPROM -> DS1307
+void loadCurrentTime(){
+  uint8_t s, m, h, D, M, Y;
+  setSlaveAddr(ADDR_24LC02B);
+  s = readTWI(0x004);
+  m = readTWI(0x005);
+  h = readTWI(0x006);
+  D = readTWI(0x007);
+  M = readTWI(0x008);
+  Y = readTWI(0x009);
+
+  setSlaveAddr(ADDR_DS1307);
+  writeTWI(0x00, s);
+  writeTWI(0x01, m);
+  writeTWI(0x02, h);
+  writeTWI(0x04, D);
+  writeTWI(0x05, M);
+  writeTWI(0x06, Y);
 }
 int main(){
   initLEDs();
@@ -416,21 +472,11 @@ int main(){
   initTWI();
   initDelay();    
 
-  if(VERBOSE){
-    respond("EEPROM TEST START!");
-    setSlaveAddr(ADDR_24LC02B);
-    writeTWI(0x00, 0x23);
-    writeTWI(0x01, 0x34);
-    uint8_t d;
-    d = readTWI(0x00);
+  // load stuff
 
-    if(d == 0x23){
-      respond("EEPROM TEST DONE!");
-    }
-    else{
-      respond("EEPROM TEST FAILED!");
-    }
-  }
+  loadCurrentTime();
+  loadZero();
+
   uint8_t flag3 = 0;
   LED1(1);
   while(1){
@@ -501,6 +547,13 @@ uint8_t charToInt(char *buf, uint8_t _start, uint8_t _end){
 }
 
 uint32_t getWeight(){
+  uint32_t v = readWeight();
+  if(v+offset > 0){
+    return (v+offset)/SCALE_FACTOR;
+  }
+  return 0;
+}
+uint32_t readWeight(){
   uint8_t i, s; 
   uint32_t v=0, sum =0;
   uint8_t highPeriod = 40, data[3]={0}, pos=7;
@@ -534,9 +587,9 @@ uint32_t getWeight(){
 			| static_cast<unsigned long>(data[1]) << 8
 			| static_cast<unsigned long>(data[0]) );
       
-  sprintf(wBuf, "%x|%x|%x, v = %ld", data[2], data[1], data[0], v);
-  respond(wBuf);
-
+//  sprintf(wBuf, "%x|%x|%x, v = %ld", data[2], data[1], data[0], v);
+//  respond(wBuf);
+  
   return v;
 }
 uint8_t getSecond(uint8_t addr){
@@ -562,12 +615,73 @@ uint8_t decimalTo8bit(uint8_t v){
   return ((v/10)<<4) | (v%10);
 }
 
+void setZero(){
+  offset = readWeight();
+
+  offset = -offset;
+
+  uint8_t data[3] = {0};
+  // SLAVE ON!
+  if(VERBOSE){
+    sprintf(wBuf, "offset is %ld, %x", offset, offset);
+    respond(wBuf);
+  }
+  setSlaveAddr(ADDR_24LC02B);
+
+
+  data[2] = (offset & 0xFF0000) >> 16;
+  data[1] = (offset & 0x00FF00) >> 8;
+  data[0] = (offset & 0x0000FF);
+  
+  sprintf(wBuf, "offsets %x|%x|%x", (offset & 0xF00), (offset & 0x0F0), (offset & 0x00F));
+  respond(wBuf);
+  sprintf(wBuf, "datas %x|%x|%x", data[2], data[1], data[0]);
+  respond(wBuf);
+
+  writeTWI(0x002, data[2]);
+  writeTWI(0x001, data[1]);
+  writeTWI(0x000, data[0]);
+  if(VERBOSE) respond("write to EEPROM Complete!");
+}
+void loadZero(){
+  uint8_t data[3] = {0};
+  // load zero offset from EEPROM
+  setSlaveAddr(ADDR_24LC02B);
+  data[2] = readTWI(0x002);
+  data[1] = readTWI(0x001);
+  data[0] = readTWI(0x000);
+  if(VERBOSE){
+    sprintf(wBuf, "data! %x|%x|%x", data[2], data[1], data[0]);
+    respond(wBuf);
+  }
+  offset = (data[2] << 16) | (data[1] << 8) | (data[0]);
+  if(VERBOSE){
+    sprintf(wBuf, "Zeroing Offset loaded. (%ld)", offset);
+    respond(wBuf);
+  }
+}
 // EEPROM 배치도 2048 byte => 2^11
 // ------------------------------------------------------ 
-// 0x000: 몇개의 정보가 저장되어있는가?
-// 0x001 ~ 0x006: 제일 최근에 저장된 날짜 (장비가 켜질때 해당 시간을 불러온다.)
-// 0x007 ~ 0x00C: 제일 마지막에 사료량을 기록한 날짜
+// [3bit] 0x000 ~ 0x002: offset 24bit for 영점조절
 
-// 0x006+n*7 ~ 0x00C+n*7: n번째 정보의 날짜(Y-M-D:h-m-s)
-// 0x00D+n*7: n번째 정보의 사료량 (최대 256g)
+// [1bit] 0x003: 몇개의 정보가 저장되어있는가?
+// [6bit] 0x004 ~ 0x009: 제일 최근에 저장된 날짜 (장비가 켜질때 해당 시간을 불러온다.)
+// [6bit] 0x0010 ~ 0x00F: 제일 마지막에 사료량을 기록한 날짜
 
+// [6bit] 0x009+n*7 ~ 0x00F+n*7: n번째 정보의 날짜(Y-M-D:h-m-s)
+// [1bit] 0x010+n*7: n번째 정보의 사료량 (최대 256g)
+
+
+// 캘리브레이션
+// 100원 => 5.42g, 50원 => 4.16g
+
+// 0.002g 단위
+// 2mg단위로 측정가능!
+
+// 0.002g * 2^24 => 33554
+
+// 1949 => 5.42g  ==> 1g당 359.5
+// 4163 => 10.84g  ==> 1g당 384g
+// 5700 => 15g ==> 1g당 380
+
+// 1g당 380
