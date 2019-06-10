@@ -30,7 +30,7 @@
 #define BLUETOOTH_LISTEN 1
 #define VERBOSE 1
 
-#define SCALE_FACTOR 38UL
+#define SCALE_FACTOR 38.7
 
 uint8_t days[14]={0,31,28,31,30,31,30,31,31,30,31,30,31};
 
@@ -53,7 +53,6 @@ volatile uint8_t data_length=0;
 volatile uint8_t isChecking = 0, flag2 = 0, flag3 = 0;
 volatile uint8_t startFeeding = 0, finishFeeding = 0;
 volatile uint8_t saveTimeFlag = 0;
-// flag(INT0), flag2(TIMER0), flag3(for TIMER1)
 volatile uint8_t isTimerDone = 0;
 volatile uint8_t hasError = 0;
 volatile uint8_t isWeightInvalid = 0;
@@ -87,16 +86,6 @@ void initDelay(){
   EIMSK = (1 << INT0) | (0 << INT1); // External Interrupt 0 is enabled.
   // External Interrupt Control Register A
   EICRA = (1 << ISC01) | (1 << ISC00) | (0 << ISC11) | (0 << ISC10); // rising edge of INT0 generate an interrupt request. 
-  /*
-  // +) ISR 없이 인터럽트 체크하기
-    while(1){
-      if(EIFR & (1 << INTF0)){
-        flag != flag;
-        EIFR &= ~(1 << INTF0);
-        LED2(flag);
-      }
-    }
-  */
 
   // 8bit Timer/Counter2 with PWM and Asynchoronous Operation p.155
   // Timer/Counter2 Control Register A - controls the Output Compare pin (OC2A) behavior.
@@ -105,7 +94,7 @@ void initDelay(){
   // Update of OCRx at Immediate, TOV flag set on MAX. (p.164)
 
   // Asynchoronous Status Register (p.167)
-  ASSR = (0<< AS2 | 0<<EXCLK);
+  ASSR = (1<< AS2 | 1<<EXCLK);
 
   // Timer/Counter2 Control Register B - CS22:0, (Clock Select)  
   //  TCCR2B = 0b110 << CS20; // ClkT2S / 1024
@@ -116,7 +105,6 @@ void initDelay(){
   TIMSK2 = 1 << TOIE2; // Timer/Counter2 Overflow Interrupt Enable
 
   // 8bit Timer/Counter1 with PWM and Asynchoronous Operation p.140
-
   TCCR1A = 0;
   TIMSK1 = 1 << TOIE1;
   TCCR1B = 0b101 << CS10; // p.143
@@ -165,8 +153,7 @@ void initTWI(){ // p.225
 //     ## COMMUNICATION ##
 
 // - UART
-void respond(char *);
-void respondByte(uint8_t);
+void respond(char *); // 출력
 
 // - TWI(I2C)
 void setSlaveAddr(uint8_t);
@@ -181,48 +168,43 @@ uint8_t writeTWI(uint16_t, uint8_t);
 void loadClock(); // using EEPROM
 void loadDataLength();
 void resetEEPROM();
-// - TWI(DS1307)
+// - TWI(RTC Module, DS1307)
+void setCurrentTime(char *);
+void initClock();
+
 uint8_t getSecond(uint8_t);
 uint8_t getMinute(uint8_t);
 uint8_t getHour(uint8_t);
 uint8_t getDate(uint8_t);
 uint8_t getMonth(uint8_t);
 uint8_t getYear(uint8_t);
+void getCurrentTime(); // EEPROM -> RTC Module
+void saveCurrentTime(); // RTC Module -> EEPROM every minutes
 
-void setSecond(uint16_t, uint8_t);
-void setMinute(uint16_t, uint8_t);
-void setHour(uint16_t, uint8_t);
-void setDate(uint16_t, uint8_t);
-void setMonth(uint16_t, uint8_t);
-void setYear(uint16_t, uint8_t);
-uint8_t decimalTo8bit(uint8_t);
-
-// - Time/Counter2
+// - 8bit Time/Counter2
 void startTimer(uint8_t);
 void stopTimer();
 void delay_ms(int);
 void delay_us(int);
+
 // - HX711 (24bit ADC)
 uint32_t readWeight();
 uint32_t getWeight();
 void setZero();
-
 void togglePulse(uint8_t);
-//     ## Miscellaneous ##
 
+long int getDiff(); // 얼마만큼 사료가 소비되었는가 측정
+void clearDiff(); // getDiff를 초기화시키고 EEPROM에 기록하는가 검사
+
+//     ## Miscellaneous ##
 void debugValue(uint8_t);
 int verifyCommand();
 void showHelp();
 void checkNextLine();
-void getCurrentTime();
-void setCurrentTime(char *);
-void saveCurrentTime();
-void initClock();
-void clearDiff();
-long int getDiff();
 uint8_t charToInt(char *, uint8_t, uint8_t);
 void showDatas(long int time);
 long int dateToTimeStamp(uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t);
+uint8_t decimalTo8bit(uint8_t);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -663,7 +645,7 @@ int main(){
         }
         else if(flag3){ // 5분마다 ACTIVATED 된다.
           LED3(1);
-          // TODO : 날짜 체크하기
+          respond("<1분마다 정기적으로 하는 무게검사>");
           if(startFeeding == 0 && finishFeeding == 0)
             clearDiff();
           flag3 = 0;
@@ -760,8 +742,8 @@ uint32_t getWeight(){
   else if((long)v + offset > -3*SCALE_FACTOR){ // -0.3g 까지는 보정해주자.
     return 0;
   }
-  sprintf(wBuf, "v is %ld(%ld), offset is %ld(%ld), v+offset is %ld", v, (long)v, offset, (long)offset, (long)v+offset);
-  respond(wBuf);
+//  sprintf(wBuf, "v is %ld(%ld), offset is %ld(%ld), v+offset is %ld", v, (long)v, offset, (long)offset, (long)v+offset);
+//  respond(wBuf);
   respond("Invalid value detected. \n Re-zero should be done!");
   isWeightInvalid = true;
   return 0;
@@ -801,10 +783,10 @@ uint32_t readWeight(){
       togglePulse(1); delay_us(10); delay_us(10); 
       togglePulse(0); delay_us(10); delay_us(10);
     }
-    v = ( static_cast<unsigned long>((data[2] & 0x80) ? 0xFF : 0x00) << 24
-        | static_cast<unsigned long>(data[2]) << 16
-        | static_cast<unsigned long>(data[1]) << 8
-        | static_cast<unsigned long>(data[0]) );
+    v = ( (((uint32_t)((data[2] & 0x80) ? 0xFF : 0x00)) << 24)
+        | (((uint32_t)(data[2])) << 16)
+        | (((uint32_t)(data[1])) << 8)
+        | (((uint32_t)(data[0])) ));
     _sum += v;
     if(s==0){
       _min = v;
@@ -878,9 +860,10 @@ void loadZero(){
   }
 }
 void showHelp(){
+  /*
   respond("< 명령어들 >");
   respond("==== 일반 ====");
-  /*respond("HI: say hello to system!");
+  respond("HI: say hello to system!");
   respond("CT: 현재 시스템 시간을 보여줍니다.");
   respond("IT: 시계를 0:0:0-0:0:0으로 초기화합니다. ");
   respond("ST: 시스템 시간을 수동으로 설정합니다.");
@@ -888,17 +871,15 @@ void showHelp(){
   respond("X: 현재 무게 측정값을 출력합니다.");
   respond("RESET: EEPROM에 저장된 모든 정보를 초기화합니다.");
   respond("GD: 현재 사료 소비량을 계산합니다.");
+  respond("CW: 현재 사료 소비량을 EEPROM에 저장합니다.");
   respond("==== 통계 ====");
-  respond("S_1HOUR: 최근 1시간동안의 사료 소비량을 출력합니다.");
-  respond("S_6HOUR: 최근 6시간동안의 사료 소비량을 출력합니다.");
+  respond("S_1MIN: 최근 1시간동안의 사료 소비량을 출력합니다.");
+  respond("S_1HOUR: 최근 6시간동안의 사료 소비량을 출력합니다.");
   respond("S_1DAY: 최근 하루동안의 사료소비량을 출력합니다.");
   respond("S_ALL: 저장되어있는 모든 소비 데이터를 출력합니다.");
   */
-  respond("==============");
 }
 void clearDiff(){
-  respond("정기적으로 무게 검사! (1분)");
-  
   long int diff = getDiff();
   beforeWeight = getWeight();
 
@@ -906,13 +887,10 @@ void clearDiff(){
     respond("You got invalid weight data. plz zero again");
   }
   else if(diff < 0){
-    respond("You should have pushed button when you feed!");
+    respond("FEED버튼을 누른상태로 보급을 해야합니다.");
   }
   else if(diff != 0){
-    sprintf(wBuf, "현재 저장된 정보: %d개", data_length);
-    respond(wBuf);
-
-    sprintf(wBuf, "diff is %ld.%d", diff/10, diff%10);
+    sprintf(wBuf, "%ld.%dg만큼 사료가 소비됨.", diff/10, diff%10);
     respond(wBuf);
     getCurrentTime();
     // [6bit] 0x009+n*8 ~ 0x00E(14)+n*8: n번째 정보의 날짜(Y-M-D:h-m-s)
@@ -950,13 +928,11 @@ void clearDiff(){
 
     respond("EEPROM에 해당 정보 쓰기 완료!");
     data_length += 1;
-    sprintf(wBuf, "현재 저장된 정보: %d(%d)개", data_length, _d);
-    respond(wBuf);
-    sprintf(wBuf, "진짜로 쓰여진 값: %d", readTWI(0x003));
+    sprintf(wBuf, "현재 저장된 정보: %d개", data_length);
     respond(wBuf);
   }
   else {
-    respond("무게 차이가 0.5g이내이므로 무시함.");
+    respond("무게 차이가 0.5g이내이므로 쓰지않음.");
   }
 }
 long int getDiff(){
@@ -976,7 +952,7 @@ long int getDiff(){
 void loadDataLength(){
   setSlaveAddr(ADDR_24LC02B);
   data_length = 0;
-//  data_length = readTWI(0x003);
+  data_length = readTWI(0x003);
   if(VERBOSE){
     sprintf(wBuf, "%d개의 정보가 저장되어있음!", data_length);
     respond(wBuf);
@@ -1038,7 +1014,7 @@ void showDatas(long int time){
     v1 = readTWI(0x00F + i*8) << 8;
     v2 = readTWI(0x010 + i*8);
     v = v1 | v2;
-    sprintf(wBuf, "20%d년 %d월 %d일 %d시 %d분 %d초 -> %d.%dg 소비", n, Y, M, D
+    sprintf(wBuf, "20%d년 %d월 %d일 %d시 %d분 %d초 -> %d.%dg 소비", Y, M, D
     , h, m, s, v/10, v%10);
     respond(wBuf);
     sum += v;
