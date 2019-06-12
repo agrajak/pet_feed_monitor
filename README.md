@@ -57,7 +57,7 @@ respond("HI: say hello to system!");
 respond("CT: 현재 시스템 시간을 보여줍니다.");
 respond("IT: 시계를 0:0:0-0:0:0으로 초기화합니다. ");
 respond("ST: 시스템 시간을 수동으로 설정합니다.");
-respond("ZERO: 영점 조절을 합니다.");
+respond("ZERO: 영점 조절을 합니다. 조절 후 OFFSET 값을 EEPROM에 저장합니다.");
 respond("X: 현재 무게 측정값을 출력합니다.");
 respond("RESET: EEPROM에 저장된 모든 정보를 초기화합니다.");
 respond("GD: 현재 사료 소비량을 계산합니다.");
@@ -68,5 +68,12 @@ respond("S_1HOUR: 최근 6시간동안의 사료 소비량을 출력합니다.")
 respond("S_1DAY: 최근 하루동안의 사료소비량을 출력합니다.");
 respond("S_ALL: 저장되어있는 모든 소비 데이터를 출력합니다.");
 ```
+메모리 용량 부족으로 showHelper()안에서 주석처리
+
+## 이슈
+ - 타임스탬프 월/년 단위 오류
+ - EEPROM에 최대 256개 까지 밖에 저장 못함. 소스 코드 최하단 주석 참조.
+ - 버퍼 오버플로우
+
 
 작성 중
